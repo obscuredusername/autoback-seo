@@ -3,20 +3,16 @@ import json
 import os
 import asyncio
 import random
-import ssl
 import time
 from urllib.parse import urlparse
-import re
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, urljoin, quote_plus
 
 from bs4 import BeautifulSoup
 import aiohttp
-from django.conf import settings
 
 from .base import WebContentScraper
-from .utils import YahooLink
 from .news_section import GoogleNewsScraper, BingScraper
 from .service import GNewsFetcher
 
