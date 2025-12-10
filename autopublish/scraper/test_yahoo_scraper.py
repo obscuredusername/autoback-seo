@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""
+Test script for YahooScraper
+"""
+import asyncio
+import json
+import logging
+from autopublish.scraper.news_section import YahooScraper
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('yahoo_scraper_test.log')
+    ]
+)
+
+async def test_scraper():
+    """Test the YahooScraper with sample categories"""
+    # Initialize the scraper
+    scraper = YahooScraper()
+    
+    # Test with a few categories
+    test_categories = [
+        {'name': 'politics', 'num': 3},  # Get 3 politics articles
+        {'name': 'technology', 'num': 2},  # Get 2 technology articles
+    ]
+    
+    print("Starting Yahoo News Scraper test...")
+    print(f"Testing with categories: {[c['name'] for c in test_categories]}")
+    
+    try:
+        # Fetch the news
+        results = await scraper.fetch_news(
+            categories=test_categories,
+            country='fr',
+            language='fr'
+        )
+        
+        # Print summary
+        print("\n=== Test Results ===")
+        print(f"Total articles scraped: {results['total_articles']}")
+        
+        # Print articles by category
+        for category, articles in results['categories'].items():
+            print(f"\n--- {category.upper()} ({len(articles)} articles) ---")
+            for i, article in enumerate(articles, 1):
+                print(f"\nArticle {i}:")
+                print(f"Title: {article['title']}")
+                print(f"URL: {article['url']}")
+                print(f"Preview: {article['content'][:150]}..." if article['content'] else "No content")
+        
+        # Save full results to file
+        with open('scraped_articles.json', 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        print("\nFull results saved to 'scraped_articles.json'")
+        
+    except Exception as e:
+        print(f"Error during scraping: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    asyncio.run(test_scraper())

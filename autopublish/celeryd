@@ -1,0 +1,15 @@
+#!/bin/bash
+
+# Set the Django settings module
+export DJANGO_SETTINGS_MODULE=autopublish.settings
+
+# Set the PYTHONPATH to include your project directory
+export PYTHONPATH=$PYTHONPATH:$(pwd)
+
+# Activate virtual environment if it exists
+if [ -f "venv/bin/activate" ]; then
+    source venv/bin/activate
+fi
+
+# Run Celery worker with the autopublish project
+celery -A autopublish worker --loglevel=info

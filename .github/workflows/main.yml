@@ -1,0 +1,57 @@
+name: Auto Publisher Backend (Production)
+
+on:
+  workflow_dispatch:
+#main prod
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Write .env using printf
+        run: printf "%s" "${{ secrets.ENV_VAR_MAIN }}" > .env
+
+      - name: Build Docker image
+        run: |
+          docker build -t auto-backend-prod:latest .
+          docker save auto-backend-prod:latest -o auto-backend-prod.tar
+          chmod 644 auto-backend-prod.tar
+
+      # - name: Rsync Docker image to server
+      #   uses: up9cloud/action-rsync@v1.1
+      #   env:
+      #     HOST: ${{ secrets.SSH_HOST }}
+      #     USER: ${{ secrets.SSH_USER }}
+      #     KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      #     PORT: ${{ secrets.SSH_PORT }}
+      #     TARGET: ~/web/backend/prod/
+      #     SOURCE: auto-backend-prod.tar
+      #     ARGS: -avz --progress
+      - name: Upload image to server (scp)
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          source: auto-backend-prod.tar
+          target: ~/web/backend/prod/
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            docker load -i ~/web/backend/prod/auto-backend-prod.tar
+            rm -f ~/web/backend/prod/auto-backend-prod.tar
+
+            docker stop auto-backend-prod || true
+            docker rm auto-backend-prod || true
+
+            docker run -d --restart=always --name auto-backend-prod -v /var/www/spreadtheword.fr/images/:/var/www/spreadtheword.fr/images -p 8020:8020 -e DJANGO_PORT=8020 auto-backend-prod:latest

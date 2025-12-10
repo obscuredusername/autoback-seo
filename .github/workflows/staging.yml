@@ -1,0 +1,49 @@
+name: Auto Publisher Backend (Staging)
+
+on:
+  push:
+    branches:
+        - staging 
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Write .env using printf
+        run: printf "%s" "${{ secrets.ENV_VAR_STAGING }}" > .env
+
+      - name: Build Docker image
+        run: |
+          docker build -t auto-backend-stage:latest .
+          docker save auto-backend-stage:latest -o auto-backend-stage.tar
+
+      - name: Rsync Docker image to server
+        uses: up9cloud/action-rsync@master
+        env:
+          HOST: ${{ secrets.SSH_HOST }}
+          USER: ${{ secrets.SSH_USER }}
+          KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          PORT: ${{ secrets.SSH_PORT }}
+          TARGET: ~/web/backend/staging/
+          SOURCE: auto-backend-stage.tar
+          ARGS: -avz --progress
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            docker load -i ~/web/backend/staging/auto-backend-stage.tar
+            rm -f ~/web/backend/staging/auto-backend-stage.tar
+            
+            docker stop auto-backend-stage || true
+            docker rm auto-backend-stage || true
+
+            docker run -d --restart=always --name auto-backend-stage -p 8010:8010 -v /var/www/spreadtheword.fr/images/:/var/www/spreadtheword.fr/images -e DJANGO_PORT=8010 auto-backend-stage:latest

@@ -1,0 +1,50 @@
+name: Auto Publisher Backend (Testing)
+
+on:
+  push:
+    branches:
+      - testing
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Write .env using printf
+        run: printf "%s" "${{ secrets.ENV_VAR_TESTING }}" > .env
+
+      - name: Build Docker image
+        run: |
+          docker build -t auto-backend-test:latest .
+          docker save auto-backend-test:latest -o auto-backend-test.tar
+
+      - name: Rsync Docker image to server
+        uses: up9cloud/action-rsync@master
+        env:
+          HOST: ${{ secrets.SSH_HOST }}
+          USER: ${{ secrets.SSH_USER }}
+          KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          PORT: ${{ secrets.SSH_PORT }}
+          TARGET: ~/web/backend/testing/
+          SOURCE: auto-backend-test.tar
+          ARGS: -avz --progress
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            docker load -i ~/web/backend/testing/auto-backend-test.tar
+            rm -f ~/web/backend/testing/auto-backend-test.tar
+
+            docker stop auto-backend-test || true
+            docker rm auto-backend-test || true
+
+            docker run -d --restart=always --name auto-backend-test -p 8030:8030 auto-backend-test:latest

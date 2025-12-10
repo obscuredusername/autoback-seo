@@ -1,0 +1,4 @@
+# Import tasks to ensure they are registered with Celery
+from . import tasks  # noqa
+
+__all__ = []
