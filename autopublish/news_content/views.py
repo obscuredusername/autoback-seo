@@ -11,9 +11,7 @@ from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.parsers import JSONParser
 from django.apps import apps
-NewsPost = apps.get_model('news_content', 'NewsPost')
-NewsCategory = apps.get_model('news_content', 'NewsCategory')
-NewsSource = apps.get_model('news_content', 'NewsSource')
+
 from scraper.views import NewsByCategoryView
 from content_generator.views import rephrase_news_content
 from .tasks import process_news_task
@@ -23,7 +21,7 @@ from bson import ObjectId
 from django.contrib.sessions.models import Session
 from django.contrib.auth import get_user_model
 
-create_news_post = sync_to_async(NewsPost.objects.create, thread_sensitive=False)
+
 
 
 class NewsSchedulerView(APIView):
@@ -95,15 +93,33 @@ class NewsSchedulerView(APIView):
                     
                     User = get_user_model()
                     try:
+                        # Handle user_id conversion
+                        is_object_id = False
                         if isinstance(user_id, str):
                             try:
-                                user_id = ObjectId(user_id)
-                            except Exception as e:
-                                self.logger.error(f"Invalid user_id format: {user_id}")
-                                raise Exception(f"Invalid user_id format: {user_id}")
+                                user_id_obj = ObjectId(user_id)
+                                is_object_id = True
+                                user_id = user_id_obj
+                            except Exception:
+                                # Not a valid ObjectId, keep as string/int
+                                pass
                         
-                            # Try to get user by _id (MongoDB document _id)
-                        user = User.objects.get(_id=user_id)
+                        # Try to get user
+                        try:
+                            if is_object_id:
+                                user = User.objects.get(_id=user_id)
+                            else:
+                                # Try standard Django pk lookup for non-ObjectId
+                                user = User.objects.get(pk=user_id)
+                        except (User.DoesNotExist, Exception):
+                            # Fallback: try querying by id or _id with original value
+                            try:
+                                user = User.objects.get(id=user_id)
+                            except (User.DoesNotExist, Exception):
+                                try:
+                                    user = User.objects.get(_id=user_id)
+                                except (User.DoesNotExist, Exception):
+                                    raise User.DoesNotExist(f"User {user_id} not found")
                         self.logger.info(f"Found user: {user.email if hasattr(user, 'email') else 'No email'}")
                         
                         # Get collection from user model or default

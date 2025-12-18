@@ -5,7 +5,8 @@ from .views import (
     UserLogoutView,
     SessionCheckView,
     UserList,
-    CollectionCreateView
+    ProfileList,
+    ProfileDetail
 )
 
 urlpatterns = [
@@ -20,6 +21,7 @@ urlpatterns = [
     path('users/<int:pk>/update/', UserList.as_view(), name='user-update'),
     path('users/<int:pk>/delete/', UserList.as_view(), name='user-delete'),
     
-    # Collection management endpoints
-    path('collections/create/', CollectionCreateView.as_view(), name='collection-create'),
+    # Profile endpoints
+    path('profiles/', ProfileList.as_view(), name='profile-list'),
+    path('profiles/<int:profile_id>/', ProfileDetail.as_view(), name='profile-detail'),
 ]

@@ -79,13 +79,26 @@ def get_blog_plan(self, *args, **kwargs):
     
     logger.info(f"Starting blog plan generation for keyword: {keyword}")
     
+    # Filter out "Uncategorized" from available categories
+    filtered_categories = available_categories
+    if available_categories and len(available_categories) == 2:
+        category_names_list = available_categories[0]
+        category_name_to_id = available_categories[1]
+        
+        # Remove "Uncategorized" from both lists
+        filtered_names = [name for name in category_names_list if name.lower() != 'uncategorized']
+        filtered_name_to_id = {k: v for k, v in category_name_to_id.items() if k.lower() != 'uncategorized'}
+        
+        filtered_categories = [filtered_names, filtered_name_to_id]
+        logger.info(f"Filtered out 'Uncategorized', remaining categories: {filtered_names}")
+    
     async def generate_plan():
         try:
             # Generate the blog plan using the content_generator instance
             return await content_generator.generate_blog_plan(
                 keyword=keyword,
                 language=language,
-                available_categories=available_categories
+                available_categories=filtered_categories
             )
         except Exception as e:
             logger.error(f"Error in generate_blog_plan: {str(e)}", exc_info=True)
@@ -206,179 +219,59 @@ def inject_images_into_content(content: str, images: list) -> str:
 @shared_task(bind=True, name='autopublish.content_generator.tasks.generate_keyword_content')
 def generate_keyword_content(self, *args, **kwargs):
     """
-    Task for generating keyword content based on a blog plan.
+    Task for generating keyword content based on structured data from fetch_keyword_content_prereqs.
     
-    This task can be called with either:
-    - A dict containing blog plan data as the first argument
-    - Or with keyword arguments containing the blog plan
-    
-    The input should contain all necessary information for content generation,
-    including blog_plan, scraped_data, and image_results.
+    Expected input structure:
+    {
+        'keyword': str,
+        'language': str,
+        'country': str,
+        'blog_plan': dict,
+        'category': {'name': str, 'id': str},
+        'image_urls': [str, str],
+        'scraped_data': [dict, ...],
+        'available_categories': list
+    }
     """
     task_id = self.request.id if hasattr(self, 'request') else 'unknown'
     logger.info(f"Starting content generation task {task_id}")
     
     try:
-        # Get parameters from args or kwargs
-        # In a chain, the previous task's result comes in args[0]
-        # Additional parameters come in kwargs
+        # Get structured data from previous task
         if args and isinstance(args[0], dict):
-            # If first arg is a dict, use that as our base data
-            data = args[0].copy()  # Make a copy to avoid modifying the original
-            # Merge in any additional kwargs
+            data = args[0].copy()
             data.update(kwargs)
         else:
-            # Otherwise use kwargs
             data = kwargs
         
-        # DEBUG: Log the incoming data structure
-        logger.info(f"DEBUG: Incoming data keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
-        if isinstance(data, dict):
-            if 'data' in data:
-                logger.info(f"DEBUG: data['data'] keys: {list(data['data'].keys()) if isinstance(data['data'], dict) else 'not a dict'}")
-            if 'blog_plan' in data:
-                logger.info(f"DEBUG: data['blog_plan'] keys: {list(data['blog_plan'].keys()) if isinstance(data['blog_plan'], dict) else 'not a dict'}")
-                if isinstance(data['blog_plan'], dict) and 'data' in data['blog_plan']:
-                    logger.info(f"DEBUG: data['blog_plan']['data'] keys: {list(data['blog_plan']['data'].keys()) if isinstance(data['blog_plan']['data'], dict) else 'not a dict'}")
+        # Log incoming data structure
+        logger.info(f"Received data keys: {list(data.keys())}")
         
-        # If we have a 'data' key, use that as our main data
-        if 'data' in data and isinstance(data['data'], dict):
-            # But preserve any top-level keys that aren't in data['data']
-            top_level_extras = {k: v for k, v in data.items() if k != 'data'}
-            data = data['data']
-            data.update(top_level_extras)  # Merge back the extras
-        
-        # Extract data with proper fallbacks
+        # Extract structured data
+        keyword = data.get('keyword', '')
+        language = data.get('language', 'en')
+        country = data.get('country', 'us')
         blog_plan = data.get('blog_plan', {})
-        logger.info(f"DEBUG: blog_plan keys: {list(blog_plan.keys()) if isinstance(blog_plan, dict) else 'not a dict'}")
-        scraped_data = data.get('scraped_data', {})
-        logger.info(f"DEBUG: scraped_data keys: {list(scraped_data.keys()) if isinstance(scraped_data, dict) else 'not a dict'}")
-        image_results = data.get('image_results', {})
-        logger.info(f"DEBUG: image_results keys: {list(image_results.keys()) if isinstance(image_results, dict) else 'not a dict'}")
+        category_info = data.get('category', {})
+        image_urls = data.get('image_urls', [])
+        scraped_data = data.get('scraped_data', [])
         
-        # If we have a nested blog_plan, extract it
-        if not blog_plan and 'blog_plan' in data.get('data', {}):
-            blog_plan = data['data']['blog_plan']
+        logger.info(f"Processing keyword: {keyword}")
+        logger.info(f"Category: {category_info.get('name')} (ID: {category_info.get('id')})")
+        logger.info(f"Images: {len(image_urls)}, Scraped items: {len(scraped_data)}")
         
-        # Get language and country with proper fallbacks
-        language = data.get('language')
-        country = data.get('country')
+        # Get title from blog plan
+        title = blog_plan.get('title', keyword)
+        logger.info(f"Using title: {title}")
         
-        if not language or not country:
-            if isinstance(blog_plan, dict):
-                language = blog_plan.get('language', 'en')
-                country = blog_plan.get('country', 'us')
-            else:
-                language = 'en'
-                country = 'us'
-        
-        # Get title with proper fallback - check multiple levels of nesting
-        title = 'Unknown'
-        
-        # First, try to get from top-level data
-        if isinstance(data, dict) and data.get('title') and data.get('title') != 'Unknown':
-            title = data['title']
-            logger.info(f"Found title in top-level data: {title}")
-        # Then try blog_plan at top level
-        elif isinstance(blog_plan, dict) and blog_plan.get('title') and blog_plan.get('title') != 'Unknown':
-            title = blog_plan['title']
-            logger.info(f"Found title in blog_plan: {title}")
-        # Then try blog_plan['data'] (nested structure from process_blog_plan_and_scraped_data)
-        elif isinstance(blog_plan, dict) and 'data' in blog_plan and isinstance(blog_plan['data'], dict):
-            if blog_plan['data'].get('title') and blog_plan['data'].get('title') != 'Unknown':
-                title = blog_plan['data']['title']
-                logger.info(f"Found title in blog_plan['data']: {title}")
-        
-        if title == 'Unknown':
-            logger.warning("Could not find title in any expected location, using 'Unknown'")
-        
-        logger.info(f"Processing content generation for: {title}")
-        
-        # Log what we found
-        if scraped_data and isinstance(scraped_data, (list, dict)):
-            item_count = len(scraped_data) if hasattr(scraped_data, '__len__') else 1
-            logger.info(f"Using scraped data with {item_count} items")
-            
-        if image_results and isinstance(image_results, (list, dict)):
-            img_count = len(image_results) if hasattr(image_results, '__len__') else 1
-            logger.info(f"Using {img_count} processed images")
-        
-        # Get categories from blog plan - check nested structure
-        categories = []
-        category = None
-        available_categories = None
-        
-        # Try to get category from top-level blog_plan
-        if isinstance(blog_plan, dict):
-            if 'category' in blog_plan:
-                category = blog_plan['category']
-                categories = [category]
-            elif 'categories' in blog_plan and isinstance(blog_plan['categories'], list):
-                categories = blog_plan['categories']
-            
-            # Also check nested blog_plan['data']
-            if 'data' in blog_plan and isinstance(blog_plan['data'], dict):
-                blog_plan_data = blog_plan['data']
-                if not category and 'category' in blog_plan_data:
-                    category = blog_plan_data['category']
-                    categories = [category]
-                elif not categories and 'categories' in blog_plan_data and isinstance(blog_plan_data['categories'], list):
-                    categories = blog_plan_data['categories']
-            
-            # Get available_categories for passing through
-            available_categories = blog_plan.get('available_categories') or (
-                blog_plan.get('data', {}).get('available_categories') if isinstance(blog_plan.get('data'), dict) else None
-            )
-        
-        
-        logger.info(f"Extracted category: {category}, categories: {categories}")
-        
-        # Map category names to IDs if available_categories is present
-        mapped_categories = []
-        if available_categories and isinstance(available_categories, list):
-            # Create a lookup map: name -> id
-            cat_map = {}
-            for cat in available_categories:
-                if isinstance(cat, dict) and 'name' in cat and 'id' in cat:
-                    cat_map[cat['name'].lower()] = cat['id']
-                elif isinstance(cat, dict) and 'name' in cat:
-                    # Handle case where id might be missing or different key
-                    cat_id = cat.get('id') or cat.get('term_id')
-                    if cat_id:
-                        cat_map[cat['name'].lower()] = cat_id
-            
-            logger.info(f"Category mapping available for {len(cat_map)} categories")
-            
-            # Map the extracted categories
-            current_cats = categories if isinstance(categories, list) else [categories] if categories else []
-            if category and category not in current_cats:
-                current_cats.append(category)
-                
-            for cat_name in current_cats:
-                if isinstance(cat_name, str):
-                    cat_id = cat_map.get(cat_name.lower())
-                    if cat_id:
-                        mapped_categories.append({'id': cat_id, 'name': cat_name})
-                        logger.info(f"Mapped category '{cat_name}' to ID {cat_id}")
-                    else:
-                        logger.warning(f"Could not find ID for category '{cat_name}'")
-                elif isinstance(cat_name, dict) and 'id' in cat_name:
-                    mapped_categories.append(cat_name)
-        
-        # If we successfully mapped categories, update the categories list
-        if mapped_categories:
-            categories = mapped_categories
-            logger.info(f"Updated categories with IDs: {categories}")
-
         # Create an async function to handle the async code
         async def generate_content():
             return await content_generator.generate_blog_content(
                 keyword=title,
                 language=language,
                 blog_plan=blog_plan,
-                category_names=categories,
+                category_names=[category_info.get('name')] if category_info.get('name') else [],
                 scraped_articles=scraped_data,
-                # Optional parameters with defaults
                 custom_length_prompt="",
                 target_word_count=2000,
                 max_expansion_attempts=2,
@@ -392,66 +285,46 @@ def generate_keyword_content(self, *args, **kwargs):
             raise ValueError("No content generated")
         
         # Extract the actual title from the generated result
-        # The generate_blog_content should return a title in the result
         generated_title = result.get('title', title)
         if generated_title and generated_title != 'Unknown':
             title = generated_title
             logger.info(f"Using generated title: {title}")
         else:
             logger.warning(f"No title in generated result, using fallback: {title}")
-            
-        # Get image URLs from blog plan and processed images
-        image_urls = []
-        featured_image = None
         
-        # First, try to get from processed_images (these are the actual uploaded images)
-        processed_images = blog_plan.get('processed_images', []) or image_results.get('processed_images', [])
-        if processed_images and isinstance(processed_images, list):
-            image_urls = processed_images
-            featured_image = processed_images[0] if processed_images else None
-            logger.info(f"Found {len(processed_images)} processed images, using first as featured image")
-        
-        # Fallback to image_prompts if no processed images
-        if not image_urls and 'image_prompts' in blog_plan and isinstance(blog_plan['image_prompts'], list):
-            image_urls = [img.get('url') for img in blog_plan['image_prompts'] if img.get('url')]
-            featured_image = image_urls[0] if image_urls else None
-            logger.info(f"Using {len(image_urls)} images from blog plan image_prompts")
+        # Use image_urls from structured data
+        featured_image = image_urls[0] if image_urls else None
+        logger.info(f"Using {len(image_urls)} images, featured: {featured_image}")
         
         # Extract meta_description from blog_plan or result
         meta_description = result.get('meta_description') or blog_plan.get('meta_description', '')
         if not meta_description:
-            # Generate a simple meta description from the title
             meta_description = f"Learn about {title}. Comprehensive guide and information."
             logger.info(f"Generated fallback meta_description")
-        else:
-            logger.info(f"Using meta_description from blog plan: {meta_description[:50]}...")
-            
-        # Add metadata to the result
+        
+        # Build the final result with all necessary data
         result.update({
-            'task_status': 'success',  # Renamed from 'status' to avoid overwriting post status
+            'task_status': 'success',
             'task_id': task_id,
-            'title': title,  # Use the extracted/generated title
-            'meta_description': meta_description,  # Add meta description
-            'meta_title': title,  # Use title as meta_title
-            'og_title': title,  # OpenGraph title
-            'og_description': meta_description,  # OpenGraph description
-            'twitter_title': title,  # Twitter title
-            'twitter_description': meta_description,  # Twitter description
+            'title': title,
+            'meta_description': meta_description,
+            'meta_title': title,
+            'og_title': title,
+            'og_description': meta_description,
+            'twitter_title': title,
+            'twitter_description': meta_description,
             'language': language,
             'country': country,
-            'category': category,  # Use extracted category
-            'available_categories': available_categories,  # Use extracted available_categories
-            'categories': categories,  # Include the categories list
-            'category_ids': [cat['id'] for cat in categories if isinstance(cat, dict) and 'id' in cat],
+            'category': category_info,  # Pass the full category info with name and id
             'image_urls': image_urls,
-            'featured_image': featured_image,  # Set the featured image
-            # Pass through important data for next steps
-            'blog_plan': blog_plan,
-            'image_results': image_results,
-            'processed_images': processed_images
+            'featured_image': featured_image,
+            'scraped_data': scraped_data,
+            'blog_plan': blog_plan
         })
         
-        logger.info(f"Result metadata: featured_image={featured_image}, meta_description={meta_description[:50] if meta_description else 'None'}...")
+        logger.info(f"Content generation complete: {title}")
+        logger.info(f"Category: {category_info.get('name')} (ID: {category_info.get('id')})")
+        logger.info(f"Featured image: {featured_image}")
         
         return result
         
@@ -564,52 +437,60 @@ def prepare_payload(self, *args, **kwargs):
         else:
             logger.info(f"Valid post status found: '{current_status}'")
         
+        # Extract category information
+        category_info = post_data.pop('category', {})
+        category_id = None
+        category_name = None
+        
+        if isinstance(category_info, dict):
+            category_id = category_info.get('id')
+            category_name = category_info.get('name')
+            logger.info(f"Extracted category: {category_name} (ID: {category_id})")
+        
         preserved_fields = {
-            'available_categories': post_data.pop('available_categories', None),
-            'category': post_data.pop('category', None),
-            'categories': post_data.pop('categories', []),
-            'status': current_status,  # Use the validated status
-            'title': post_data.pop('title', None), # Preserve title
-            'content': post_data.pop('content', None), # Preserve content
-            'processed_images': post_data.pop('processed_images', []), # Preserve images
-            'image_results': post_data.pop('image_results', {}), # Preserve image results
-            'blog_plan': post_data.pop('blog_plan', {}), # Preserve blog plan
-            'task_status': post_data.pop('task_status', None)  # Remove task_status from final payload
+            'status': current_status,
+            'title': post_data.pop('title', None),
+            'content': post_data.pop('content', None),
+            'image_urls': post_data.pop('image_urls', []),
+            'featured_image': post_data.pop('featured_image', None),
+            'blog_plan': post_data.pop('blog_plan', {}),
+            'scraped_data': post_data.pop('scraped_data', []),
+            'task_status': post_data.pop('task_status', None),
+            'category_id': category_id,
+            'category_name': category_name
         }
         
-        logger.info(f"DEBUG prepare_payload: Preserved categories = {preserved_fields.get('categories')}")
-        logger.info(f"DEBUG prepare_payload: Preserved category = {preserved_fields.get('category')}")
-        logger.info(f"DEBUG prepare_payload: Preserved available_categories = {preserved_fields.get('available_categories')}")
+        # Merge kwargs into preserved_fields
+        preserved_fields.update({k: v for k, v in kwargs.items() if k not in preserved_fields})
+        
+        logger.info(f"Category for WordPress: {category_name} (ID: {category_id})")
         
         post_data = remove_none(post_data)
         
-        # Add back preserved fields if they exist
+        # Add back preserved fields
         for field, value in preserved_fields.items():
             if value is not None and value != '':
                 post_data[field] = value
         
-        # Ensure we have at least one category
-        if not post_data.get('categories') and post_data.get('category'):
-            post_data['categories'] = [post_data['category']]
+        # Set categories as a list with the category ID
+        if category_id:
+            post_data['categories'] = [int(category_id)]
+            logger.info(f"Set categories to: {post_data['categories']}")
+        else:
+            post_data['categories'] = [1]  # Default to Uncategorized
+            logger.info("No category ID found, using default (Uncategorized)")
             
         # Inject images into content if available
-        # Check for processed_images in preserved fields
-        processed_images = preserved_fields.get('processed_images', [])
-        if not processed_images and preserved_fields.get('image_results'):
-            processed_images = preserved_fields['image_results'].get('processed_images', [])
-            
-        # Also check if we have a blog_plan with processed_images
-        if not processed_images and preserved_fields.get('blog_plan'):
-            processed_images = preserved_fields['blog_plan'].get('processed_images', [])
-            
+        image_urls = post_data.get('image_urls', [])
         content = post_data.get('content')
-        if processed_images and content:
-            logger.info(f"Injecting {len(processed_images)} images into content in prepare_payload")
-            post_data['content'] = inject_images_into_content(content, processed_images)
-        elif processed_images:
-             logger.warning("Have images but no content to inject into")
+        
+        if image_urls and content:
+            logger.info(f"Injecting {len(image_urls)} images into content in prepare_payload")
+            post_data['content'] = inject_images_into_content(content, image_urls)
+        elif image_urls:
+            logger.warning("Have images but no content to inject into")
         else:
-             logger.info("No images to inject")
+            logger.info("No images to inject")
 
         
         logger.info(f"Successfully prepared payload for post: {title}")
@@ -634,6 +515,50 @@ def prepare_payload(self, *args, **kwargs):
             'status': 'error',
             'task_id': self.request.id if hasattr(self, 'request') else 'unknown',
             'message': error_msg,
+            'error': str(e)
+        }
+
+
+@shared_task(bind=True, name='autopublish.content_generator.tasks.rephrase_content_task')
+def rephrase_content_task(self, data):
+    """
+    Task to rephrase content using the ContentGenerator.
+    
+    Args:
+        data (dict): Dictionary containing:
+            - content: Original content (required)
+            - title: Original title (optional)
+            - language: Target language (default: 'en')
+            - target_word_count: Target word count (default: 1000)
+            - images: List of images/image links
+            - backlinks: List of backlinks
+            - video_links: Video links
+            
+    Returns:
+        dict: Rephrased content result
+    """
+    task_id = self.request.id if hasattr(self, 'request') else 'unknown'
+    logger.info(f"Starting rephrase task {task_id}")
+    
+    try:
+        # Import here to avoid potential circular imports
+        from .views import rephrase_news_content
+        
+        # Run async function in a new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # rephrase_news_content handles the logic
+            result = loop.run_until_complete(rephrase_news_content(data))
+            return result
+        finally:
+            loop.close()
+            
+    except Exception as e:
+        error_msg = f"Error in rephrase task {task_id}: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return {
+            'status': 'error',
             'error': str(e)
         }
 

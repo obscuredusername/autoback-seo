@@ -7,7 +7,12 @@ from dotenv import load_dotenv
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'autopublish.settings')
 
 # Load environment variables
-load_dotenv()
+from pathlib import Path
+
+# Load environment variables
+# The .env file is in the project root (one level up from the Django project root)
+env_path = Path(__file__).resolve().parent.parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 # Initialize Celery before importing Django
 app = Celery('autopublish')
@@ -16,8 +21,8 @@ app = Celery('autopublish')
 app.config_from_object('django.conf:settings', namespace='CELERY')
 
 # Initialize Django after Celery is configured
-import django
-django.setup()
+# import django
+# django.setup()
 
 # Now it's safe to import Django models and settings
 from django.conf import settings
@@ -63,20 +68,20 @@ app.autodiscover_tasks(
 )
 
 # Import tasks after Celery is set up
-try:
-    # These imports will happen after Django is fully loaded
-    from keyword_content import tasks as keyword_tasks  # noqa
-    from content_generator import tasks as content_tasks  # noqa
-    
-    # Import content tasks last since they depend on Django models
-    from content import autodiscover as content_autodiscover
-    content_autodiscover()
-except Exception as e:
-    # Log the error but don't fail - this allows the app to start
-    # even if there are issues with task registration
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.warning(f"Could not import all tasks: {e}")
+# try:
+#     # These imports will happen after Django is fully loaded
+#     from keyword_content import tasks as keyword_tasks  # noqa
+#     from content_generator import tasks as content_tasks  # noqa
+#     
+#     # Import content tasks last since they depend on Django models
+#     from content import autodiscover as content_autodiscover
+#     content_autodiscover()
+# except Exception as e:
+#     # Log the error but don't fail - this allows the app to start
+#     # even if there are issues with task registration
+#     import logging
+#     logger = logging.getLogger(__name__)
+#     logger.warning(f"Could not import all tasks: {e}")
 
 # Simple task for testing
 @app.task(bind=True)
@@ -85,4 +90,4 @@ def debug_task(self):
     return f'Request: {self.request!r}'
 
 # This will make sure our tasks are registered
-app.finalize()
+# app.finalize()

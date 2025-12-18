@@ -1,7 +1,7 @@
 import logging
 from celery import shared_task
 from django.utils import timezone
-from .models import ScheduledPost, PublishedPost
+from keyword_content.models import BlogPostPayload
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +19,9 @@ def process_scheduled_posts(self):
         now = timezone.now()
         
         # Find all posts that are scheduled and due for publishing
-        scheduled_posts = ScheduledPost.objects.filter(
+        scheduled_posts = BlogPostPayload.objects.filter(
             status='scheduled',
-            scheduled_at__lte=now,
-            target_path__isnull=False
+            scheduled_at__lte=now
         )
         
         logger.info(f"Found {scheduled_posts.count()} posts to process")
@@ -31,21 +30,12 @@ def process_scheduled_posts(self):
         # Process each scheduled post
         for post in scheduled_posts:
             try:
-                # Create a published version of the post
-                published_post = PublishedPost.objects.create(
-                    scheduled_post=post,
-                    title=post.title,
-                    content=post.content,
-                    target_path=post.target_path,
-                    published_at=timezone.now()
-                )
-                
-                # Update the original post status to published
+                # Update the post status to published
                 post.status = 'published'
                 post.published_at = timezone.now()
-                post.save()
+                post.save(update_fields=['status', 'published_at'])
                 
-                logger.info(f"✅ Successfully published post {post.id} to {post.target_path}")
+                logger.info(f"✅ Successfully published post {post.id} ({post.title})")
                 processed_count += 1
                 
             except Exception as e:
@@ -53,7 +43,8 @@ def process_scheduled_posts(self):
                 
                 # Update the post status to failed
                 post.status = 'failed'
-                post.save(update_fields=['status'])
+                post.last_error = str(e)
+                post.save(update_fields=['status', 'last_error'])
                 
         logger.info(f"✅ Finished processing {processed_count} scheduled posts")
         return {"processed": processed_count, "status": "completed"}

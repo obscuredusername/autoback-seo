@@ -5,13 +5,14 @@ from asgiref.sync import async_to_sync
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from .models import UserCollection
+from rest_framework.authentication import SessionAuthentication, BasicAuthentication
+
 from .tasks import process_keyword_task
 
 logger = logging.getLogger(__name__)
 
 class BlogPost(APIView):
-    authentication_classes = []
+    authentication_classes = [SessionAuthentication, BasicAuthentication]
     permission_classes = []
     
     def _get_default_category(self) -> list:
@@ -26,7 +27,7 @@ class BlogPost(APIView):
         print("⚠️ Using default category: A LA UNE")
         return [default_category]
         
-    async def get_categories_from_api(self):
+    async def get_categories_from_api(self, domain_link='https://extifixpro.com'):
         """
         Get all categories from the external API.
         Returns a tuple of (category_names, categories_dict) where:
@@ -37,7 +38,7 @@ class BlogPost(APIView):
         import logging
         
         logger = logging.getLogger(__name__)
-        api_url = 'https://extifixpro.com/wp-json/thirdparty/v1/categories'
+        api_url = f'{domain_link}/wp-json/thirdparty/v1/categories'
         logger.info(f"🔍 Fetching categories from API: {api_url}")
         
         try:
@@ -86,10 +87,7 @@ class BlogPost(APIView):
             collection = 'default'
             if hasattr(user, 'collection') and user.collection:
                 collection = user.collection
-            else:
-                user_collection = UserCollection.objects.filter(user=user).first()
-                if user_collection:
-                    collection = user_collection.name
+
 
             # Parse request body
             try:
@@ -121,8 +119,11 @@ class BlogPost(APIView):
                 if field not in data:
                     return Response({"error": f"Missing required field: {field}"}, status=status.HTTP_400_BAD_REQUEST)
 
+            # Get domain_link from request, default to hardcoded if not present
+            domain_link = data.get('domain_link', 'https://extifixpro.com')
+            
             # Get categories synchronously
-            available_categories = async_to_sync(self.get_categories_from_api)()
+            available_categories = async_to_sync(self.get_categories_from_api)(domain_link)
             
             # Prepare request body for the task
             request_body = {
@@ -135,8 +136,9 @@ class BlogPost(APIView):
                 'user_email': user.email,
                 'available_categories': available_categories,
                 'collection': data.get('collection', collection),
+                'domain_link': domain_link,
             }
-            
+            print(f"✅ Categories in posts fucntion: {request_body['available_categories']}")
             # Process keywords with their scheduled times
             for kw in data['keywords']:
                 if isinstance(kw, dict) and 'text' in kw and kw['text']:

@@ -42,43 +42,43 @@ def process_keyword_task(self, request_body):
             "keywords": request_body.get("keywords", []),
             "language": request_body.get("language", "en"),
             "country": request_body.get("country", "us"),
-            "available_categories": request_body.get("available_categories", []),
             "target_path": request_body.get("target_path", "CRM.posts"),
         }
 
 
         keyword = request_body['keywords'][0]['text']
+        scheduled_time = request_body['keywords'][0].get('scheduled_time', None)
         language = request_body.get('language', 'en')
         country = request_body.get('country', 'us')
+        available_categories = request_body.get('available_categories', [])
         
-        # Create the task chain with parallel execution of blog plan and scraping
+        # Create the task chain with chord for parallel execution
         task_chain = (
-            # Step 1: Fetch keyword prerequisites
+            # Step 1: Create blog plan record and get metadata
             signature(
                 'autopublish.keyword_content.tasks.fetch_keyword_content_prereqs',
                 kwargs={
                     'keyword': keyword,
                     'language': language,
                     'country': country,
-                    'available_categories': request_body.get('available_categories', []),
+                    'available_categories': available_categories,
+                    'scheduled_time': scheduled_time,
                 }
             ) | 
-            # Step 2: Run blog plan generation, scraping, and image processing in parallel
-            # Then process the results and chain to content generation
+            # Step 2: Run parallel tasks and process results
             chord(
-                # Parallel tasks in the header
+                # Parallel tasks
                 [
-                    # Blog plan generation
                     signature(
                         'autopublish.content_generator.tasks.get_blog_plan',
                         kwargs={
                             'keyword': keyword,
                             'language': language,
-                            'country': country
+                            'country': country,
+                            'available_categories': available_categories
                         },
                         immutable=True
                     ),
-                    # Scraping task
                     signature(
                         'autopublish.scraper.tasks.process_scraping_task',
                         kwargs={
@@ -89,7 +89,6 @@ def process_keyword_task(self, request_body):
                         },
                         immutable=True
                     ),
-                    # Image processing task
                     signature(
                         'autopublish.scraper.tasks.process_and_save_images',
                         kwargs={
@@ -101,32 +100,37 @@ def process_keyword_task(self, request_body):
                         immutable=True
                     )
                 ],
-                # Callback that processes the parallel results
+                # Callback to process parallel results
                 signature(
-                    'autopublish.keyword_content.tasks.process_blog_plan_and_scraped_data',
+                    'autopublish.keyword_content.tasks.process_parallel_results',
                     kwargs={
+                        'keyword': keyword,
                         'language': language,
                         'country': country,
-                        'target_path': request_body.get('target_path', 'CRM.posts'),
-                        'user_email': request_body.get('user_email')
+                        'available_categories': available_categories,
+                        'scheduled_time': scheduled_time
                     }
-                ) | 
-                # Step 5: Generate content with the combined data
-                # The result from process_blog_plan_and_scraped_data will be passed as the first argument
+                ) |
+                # Step 3: Generate content with the structured data
                 signature(
                     'autopublish.content_generator.tasks.generate_keyword_content'
                 ) |
-                # Step 6: Prepare payload (inject images, format data)
+                # Step 4: Prepare payload (inject images, format data)
                 signature(
                     'autopublish.content_generator.tasks.prepare_payload',
-                    kwargs={}
+                    kwargs={
+                        'user_email': request_body.get('user_email'),
+                        'domain_link': request_body.get('domain_link'),
+                        'target_path': request_body.get('target_path', 'CRM.posts')
+                    }
                 ) |
-                # Step 7: Save blog post
+                # Step 5: Save blog post
                 signature(
                     'autopublish.keyword_content.tasks.save_blog_post',
                     kwargs={
                         'user_email': request_body.get('user_email'),
-                        'status': 'publish'
+                        'status': 'publish',
+                        'scheduled_time': scheduled_time
                     }
                 )
             )
@@ -141,24 +145,26 @@ def process_keyword_task(self, request_body):
         raise
 
 @shared_task(bind=True, name="autopublish.keyword_content.tasks.fetch_keyword_content_prereqs")
-def fetch_keyword_content_prereqs(self, keyword: str, language: str = "en", country: str = "us", available_categories: list = None):
+def fetch_keyword_content_prereqs(self, keyword: str, language: str = "en", country: str = "us", available_categories: list = None, scheduled_time: str = None):
     """
-    Prepare keyword content by generating a blog plan and scraping related content.
+    Prepare keyword content prerequisites - creates blog plan record and returns metadata.
+    The actual parallel tasks are handled in process_keyword_task via chord.
     
     Args:
         keyword: The main keyword to generate content for
         language: Language code (default: 'en')
         country: Country code (default: 'us')
-        available_categories: List of available category IDs
+        available_categories: List of [category_names, category_name_to_id_dict]
+        scheduled_time: Scheduled time for the post
         
     Returns:
-        dict: Blog plan data for the next task in the chain
+        dict: Metadata to pass to parallel tasks
     """
     try:
         logger.info(f"Starting fetch_keyword_content_prereqs for keyword: {keyword}")
         
         # Create a new blog plan in PostgreSQL
-        blog_plan = BlogPlan.objects.create(
+        blog_plan_record = BlogPlan.objects.create(
             keyword=keyword,
             language=language,
             country=country,
@@ -167,32 +173,131 @@ def fetch_keyword_content_prereqs(self, keyword: str, language: str = "en", coun
             tasks={}
         )
         
-        logger.info(f"Created blog plan with ID: {blog_plan.id}")
+        logger.info(f"Created blog plan record with ID: {blog_plan_record.id}")
         
-        # Return a dictionary with the required fields for the next task
-        # The entire dictionary will be passed as kwargs to the next task
+        # Return metadata for the next tasks
         return {
             'keyword': keyword,
             'language': language,
             'country': country,
-            'available_categories': available_categories or [],
-            'plan_id': str(blog_plan.id)  # Include plan_id for reference
-        }
-        
+            'plan_id': str(blog_plan_record.id),
+            'available_categories': available_categories,
+            'scheduled_time': scheduled_time
+        }  
     except Exception as e:
         error_msg = f"Error in fetch_keyword_content_prereqs: {str(e)}\n{traceback.format_exc()}"
         logger.error(error_msg)
         
-        # Update the blog plan with error status if we have a blog_plan
-        if 'blog_plan' in locals():
+        # Update the blog plan with error status if we have a blog_plan_record
+        if 'blog_plan_record' in locals():
             try:
-                blog_plan.status = 'error'
-                blog_plan.error = str(e)
-                blog_plan.save(update_fields=['status', 'error', 'updated_at'])
+                blog_plan_record.status = 'error'
+                blog_plan_record.error = str(e)
+                blog_plan_record.save(update_fields=['status', 'error', 'updated_at'])
             except Exception as update_error:
                 logger.error(f"Failed to update blog plan with error: {str(update_error)}")
         
         raise self.retry(exc=e, countdown=60)  # Retry after 60 seconds
+
+
+@shared_task(bind=True, name='autopublish.keyword_content.tasks.process_parallel_results')
+def process_parallel_results(self, results, **kwargs):
+    """
+    Process results from parallel tasks (blog_plan, scraper, images) and structure data.
+    
+    Args:
+        results: List of results from parallel tasks
+        **kwargs: Additional metadata (keyword, language, country, available_categories, plan_id, scheduled_time)
+        
+    Returns:
+        dict: Structured data ready for content generation
+    """
+    try:
+        logger.info("Processing parallel task results")
+        
+        # Extract metadata from kwargs
+        keyword = kwargs.get('keyword', '')
+        language = kwargs.get('language', 'en')
+        country = kwargs.get('country', 'us')
+        available_categories = kwargs.get('available_categories', [])
+        plan_id = kwargs.get('plan_id', '')
+        scheduled_time = kwargs.get('scheduled_time', None)
+        
+        # Extract results
+        blog_plan_result = results[0] if len(results) > 0 else {}
+        scraped_data_result = results[1] if len(results) > 1 else {}
+        images_result = results[2] if len(results) > 2 else {}
+        
+        # Extract blog plan data
+        blog_plan_data = blog_plan_result.get('data', blog_plan_result) if isinstance(blog_plan_result, dict) else {}
+        
+        # Extract selected category from blog plan
+        selected_category = blog_plan_data.get('category', '')
+        logger.info(f"Blog plan selected category: {selected_category}")
+        
+        # Match category with available categories to get ID
+        category_id = None
+        category_name = selected_category
+        
+        if available_categories and len(available_categories) == 2:
+            category_names_list = available_categories[0]
+            category_name_to_id = available_categories[1]
+            
+            # Filter out Uncategorized from the mapping
+            filtered_name_to_id = {k: v for k, v in category_name_to_id.items() if k.lower() != 'uncategorized'}
+            
+            # If selected category is Uncategorized or not found, use first available category
+            if selected_category.lower() == 'uncategorized' or selected_category not in filtered_name_to_id:
+                if filtered_name_to_id:
+                    # Use the first non-Uncategorized category
+                    category_name = list(filtered_name_to_id.keys())[0]
+                    category_id = filtered_name_to_id[category_name]
+                    logger.info(f"Selected category was '{selected_category}', using first available: {category_name} (ID: {category_id})")
+                else:
+                    # Fallback to Uncategorized only if no other categories exist
+                    category_id = category_name_to_id.get('Uncategorized', '1')
+                    category_name = 'Uncategorized'
+                    logger.warning(f"No valid categories available, falling back to Uncategorized (ID: {category_id})")
+            else:
+                # Use the matched category
+                category_id = filtered_name_to_id[selected_category]
+                logger.info(f"Matched category '{selected_category}' to ID: {category_id}")
+        
+        # Extract image URLs
+        image_urls = []
+        if isinstance(images_result, dict):
+            processed_images = images_result.get('processed_images', [])
+            image_urls = processed_images[:2] if len(processed_images) >= 2 else processed_images
+            logger.info(f"Extracted {len(image_urls)} image URLs")
+        
+        # Extract scraped data
+        scraped_data = scraped_data_result.get('results', []) if isinstance(scraped_data_result, dict) else []
+        
+        # Build structured response
+        structured_data = {
+            'keyword': keyword,
+            'language': language,
+            'country': country,
+            'blog_plan': blog_plan_data,
+            'category': {
+                'name': category_name,
+                'id': category_id
+            },
+            'image_urls': image_urls,
+            'scraped_data': scraped_data,
+            'available_categories': available_categories,
+            'scheduled_time': scheduled_time
+        }
+        
+        logger.info(f"Successfully processed parallel results for keyword: {keyword}")
+        logger.info(f"Category: {category_name} (ID: {category_id}), Images: {len(image_urls)}, Scraped items: {len(scraped_data)}")
+        
+        return structured_data
+        
+    except Exception as e:
+        error_msg = f"Error in process_parallel_results: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        raise
 
 @shared_task(bind=True, name="autopublish.keyword_content.tasks.publish_scheduled_posts")
 def publish_scheduled_posts(self):
@@ -317,130 +422,6 @@ def publish_scheduled_posts(self):
         'message': f'Successfully published {published_count} posts'
     }
     
-@shared_task(bind=True, name='autopublish.keyword_content.tasks.process_blog_plan_and_scraped_data')
-def process_blog_plan_and_scraped_data(self, results, **kwargs):
-    """
-    Process the results from blog plan generation, keyword scraping, and image processing.
-    
-    Args:
-        results: List containing the results from the parallel tasks:
-            - results[0]: Output from get_blog_plan
-            - results[1]: Output from keyword_scraping
-            - results[2]: Output from process_and_save_images (optional)
-        **kwargs: Additional keyword arguments (language, country, etc.)
-        
-    Returns:
-        dict: Combined data ready for content generation
-    """
-    try:
-        logger.info(f"Processing blog plan and scraped data")
-        
-        if not results or len(results) < 2:
-            raise ValueError(f"Expected at least 2 results (blog_plan and scraped_data), got {len(results) if results else 0}")
-        
-        # Extract results from the parallel tasks
-        blog_plan_result = results[0]
-        scraped_data_result = results[1]
-        images_result = results[2] if len(results) > 2 else {}
-        
-        # Handle case where blog_plan_result might be a dict with 'result' key
-        if isinstance(blog_plan_result, dict) and 'result' in blog_plan_result:
-            blog_plan = blog_plan_result.get('result', {})
-        else:
-            blog_plan = blog_plan_result
-            
-        # Handle case where scraped_data_result might be a dict with 'result' key
-        if isinstance(scraped_data_result, dict) and 'result' in scraped_data_result:
-            scraped_data = scraped_data_result.get('result', {})
-        else:
-            scraped_data = scraped_data_result
-            
-        # Handle case where images_result might be a dict with 'result' key
-        if isinstance(images_result, dict) and 'result' in images_result:
-            images_data = images_result.get('result', {})
-        else:
-            images_data = images_result
-        
-        if not isinstance(blog_plan, dict):
-            raise ValueError(f"Expected blog_plan to be a dict, got {type(blog_plan)}")
-            
-        if not isinstance(scraped_data, dict):
-            raise ValueError(f"Expected scraped_data to be a dict, got {type(scraped_data)}")
-        
-        # Ensure we have the basic structure
-        if 'data' not in blog_plan:
-            blog_plan = {'data': blog_plan}
-        
-        # Add scraped data to blog plan
-        blog_plan['scraped_data'] = scraped_data.get('results', [])
-        
-        # Add processed images to blog plan
-        if isinstance(images_data, dict):
-            blog_plan['processed_images'] = images_data.get('processed_images', [])
-            blog_plan['image_results'] = images_data
-            
-            # Log image processing results
-            if images_data.get('success') and images_data.get('processed_images'):
-                logger.info(f"Successfully processed {len(images_data['processed_images'])} images")
-        
-        # Add any additional kwargs to the blog plan
-        blog_plan.update(kwargs)
-        
-        # Promote important fields from blog_plan['data'] to top level for easier access
-        if 'data' in blog_plan and isinstance(blog_plan['data'], dict):
-            blog_plan_data = blog_plan['data']
-            
-            # Promote title
-            if 'title' not in blog_plan and 'title' in blog_plan_data:
-                blog_plan['title'] = blog_plan_data['title']
-            
-            # Promote category
-            if 'category' not in blog_plan and 'category' in blog_plan_data:
-                blog_plan['category'] = blog_plan_data['category']
-            
-            # Promote categories
-            if 'categories' not in blog_plan and 'categories' in blog_plan_data:
-                blog_plan['categories'] = blog_plan_data['categories']
-            
-            # Promote available_categories
-            if 'available_categories' not in blog_plan and 'available_categories' in blog_plan_data:
-                blog_plan['available_categories'] = blog_plan_data['available_categories']
-        
-        logger.info(f"Successfully processed blog plan, scraped data, and images for: {blog_plan.get('title', 'Unknown')}")
-        logger.info(f"Category: {blog_plan.get('category', 'None')}, Categories: {blog_plan.get('categories', [])}")
-        logger.info(f"DEBUG: Returning blog_plan with keys: {list(blog_plan.keys())}")
-        logger.info(f"DEBUG: blog_plan['title'] = {blog_plan.get('title', 'NOT FOUND')}")
-        logger.info(f"DEBUG: blog_plan['data'] keys = {list(blog_plan['data'].keys()) if 'data' in blog_plan and isinstance(blog_plan['data'], dict) else 'NO DATA KEY'}")
-        return blog_plan
-        
-    except Exception as e:
-        error_msg = f"Error in process_blog_plan_and_scraped_data: {str(e)}"
-        logger.error(error_msg)
-        logger.error(traceback.format_exc())
-        # Include the original results in the error for debugging
-        error_data = {
-            'error': str(e),
-            'results_type': str(type(results)),
-            'results_length': len(results) if hasattr(results, '__len__') else 'N/A',
-            'blog_plan_type': str(type(blog_plan_result)),
-            'scraped_data_type': str(type(scraped_data_result)),
-            'traceback': traceback.format_exc()
-        }
-        logger.error(f"Error details: {error_data}")
-        raise
-        # If we have a blog_plan_id, update its status
-        if 'blog_plan_id' in kwargs:
-            try:
-                blog_plan = BlogPlan.objects.get(id=kwargs['blog_plan_id'])
-                blog_plan.status = 'error'
-                blog_plan.error = error_msg
-                blog_plan.save(update_fields=['status', 'error', 'updated_at'])
-            except Exception as update_error:
-                logger.error(f"Failed to update blog plan with error: {str(update_error)}")
-        
-        # Re-raise the exception to mark the task as failed
-        raise self.retry(exc=e, countdown=60, max_retries=3)
-
 
 @shared_task(bind=True, name='autopublish.keyword_content.tasks.process_blog_plan_scraped_data_and_images')
 def process_blog_plan_scraped_data_and_images(self, results, **kwargs):
@@ -477,7 +458,13 @@ def process_blog_plan_scraped_data_and_images(self, results, **kwargs):
         
         # Add processed images to the blog plan data
         if isinstance(blog_plan_data, dict):
-            blog_plan_data['processed_images'] = images_data.get('processed_images', [])
+            processed_images = images_data.get('processed_images', [])
+            blog_plan_data['processed_images'] = processed_images
+            
+            # Set the first image as the featured image if available
+            if processed_images and len(processed_images) > 0:
+                blog_plan_data['featured_image'] = processed_images[0]
+                logger.info(f"Set featured image to: {processed_images[0]}")
         
         return blog_plan_data
         
@@ -503,7 +490,7 @@ def post_to_wordpress(self, payload, status='draft'):
     logger = logging.getLogger(__name__)
     
     try:
-        from .models import BlogPostPayload, Category
+        from .models import BlogPostPayload
         from django.contrib.auth import get_user_model
         import requests
         from django.conf import settings
@@ -546,15 +533,10 @@ def post_to_wordpress(self, payload, status='draft'):
         )
         
         # Handle categories
-        categories = []
         if 'categories' in payload:
-            for cat_name in payload['categories']:
-                category, _ = Category.objects.get_or_create(
-                    name=cat_name,
-                    defaults={'slug': slugify(cat_name)[:50]}
-                )
-                categories.append(category.name)  # Store category names for WordPress
-            post.categories.set(categories)
+            # Store categories as a list in the JSONField
+            post.categories = [c for c in payload['categories'] if isinstance(c, str)]
+            post.save()
         
         logger.info(f"Successfully {'created' if created else 'updated'} blog post in database: {post.id}")
         logger.info(f"SAVED IN DB: {post.id} - {title}")
@@ -608,7 +590,7 @@ def post_to_wordpress(self, payload, status='draft'):
             'slug': payload.get('slug', slugify(title)),
             'categories': categories,
             'tags': payload.get('tags', []),
-            'meta_title': payload.get('meta_title', '')[:60],
+            'meta_title': payload.get('meta_title') or title[:60],
             'meta_description': payload.get('meta_description', '')[:160],
             'canonical': payload.get('canonical', ''),
             'og_title': payload.get('og_title', '')[:100],
@@ -641,7 +623,8 @@ def post_to_wordpress(self, payload, status='draft'):
         logger.info(f"PUSHED IN WORDPRESS: {title}")
         
         # Make the API request to the custom endpoint
-        api_url = 'https://extifixpro.com/wp-json/thirdparty/v1/create-post'
+        domain_link = payload.get('domain_link', 'https://extifixpro.com')
+        api_url = f'{domain_link}/wp-json/thirdparty/v1/create-post'
         headers = {
             'Content-Type': 'application/json',
             'Accept': 'application/json'
@@ -656,7 +639,7 @@ def post_to_wordpress(self, payload, status='draft'):
                 'success': True,
                 'post_id': response_data.get('post_id'),
                 'message': response_data.get('message', 'Post created successfully'),
-                'url': f"https://extifixpro.com/?p={response_data.get('post_id')}"
+                'url': f"{domain_link}/?p={response_data.get('post_id')}"
             }
         else:
             error_msg = f"Failed to post to WordPress: {response.status_code} - {response_data}"
@@ -669,121 +652,273 @@ def post_to_wordpress(self, payload, status='draft'):
         raise  # Re-raise the exception to mark the task as failed
         
 @shared_task(bind=True, name="autopublish.keyword_content.tasks.save_blog_post")
-def save_blog_post(self, payload, user_email=None, status='draft'):
+def save_blog_post(self, payload, user_email=None, status='draft', scheduled_time=None):
     """
-    Save the generated blog post to WordPress via API.
+    Save the generated blog post to PostgreSQL database.
     
     Args:
         payload: The prepared payload from prepare_payload
         user_email: Email of the user who created the post (kept for backward compatibility)
         status: Status of the post ('draft', 'publish', 'pending')
+        scheduled_time: ISO format scheduled time for the post
         
     Returns:
-        dict: The WordPress API response
+        dict: The saved post data with database ID
     """
     try:
+        from .models import BlogPostPayload
+        from django.contrib.auth import get_user_model
+        from django.utils.text import slugify
+        
         # Extract data if it's wrapped in a result dict from prepare_payload
         if isinstance(payload, dict) and 'data' in payload and isinstance(payload['data'], dict):
-            logger.info("Unwrapping payload data in save_blog_post")
+            logger.info(f"Unwrapping payload data in save_blog_post")
             payload = payload['data']
-
-        # Chain the post_to_wordpress task without blocking
-        return post_to_wordpress.s(payload, status).apply_async()
+        
+        # Get or create default author (ID=1)
+        User = get_user_model()
+        default_author = User.objects.filter(id=1).first()
+        if not default_author:
+            default_author = User.objects.filter(is_superuser=True).first()
+        
+        # Extract post data
+        title = payload.get('title', '')
+        if not title or title == 'Unknown':
+            if 'blog_plan' in payload and isinstance(payload['blog_plan'], dict):
+                title = payload['blog_plan'].get('title', 'Untitled Post')
+            else:
+                title = 'Untitled Post'
+                logger.warning("No title found in payload, using default")
+        
+        content = payload.get('content', '')
+        
+        # Get scheduled_time from payload or parameter
+        if not scheduled_time:
+            scheduled_time = payload.get('scheduled_time', None)
+        
+        # Parse scheduled_time to datetime if it's a string
+        from datetime import datetime
+        scheduled_at = None
+        if scheduled_time:
+            try:
+                if isinstance(scheduled_time, str):
+                    # Handle ISO format with or without milliseconds
+                    scheduled_at = datetime.fromisoformat(scheduled_time.replace('Z', '+00:00'))
+                else:
+                    scheduled_at = scheduled_time
+                logger.info(f"Scheduled time set to: {scheduled_at}")
+            except Exception as e:
+                logger.warning(f"Failed to parse scheduled_time: {e}")
+        
+        # Get meta_description or use excerpt as fallback
+        meta_description = payload.get('meta_description', '')
+        if not meta_description:
+            meta_description = payload.get('excerpt', '')
+        excerpt = meta_description[:320] if meta_description else ''
+        
+        # Get the keyword from blog_plan or payload
+        keyword = payload.get('keyword', '')
+        if not keyword and 'blog_plan' in payload and isinstance(payload['blog_plan'], dict):
+            keywords_list = payload['blog_plan'].get('keywords', [])
+            keyword = keywords_list[0] if keywords_list else ''
+        
+        # Get featured image (first image or from payload)
+        featured_image = payload.get('featured_image', '')
+        if not featured_image and 'image_urls' in payload and payload['image_urls']:
+            featured_image = payload['image_urls'][0]
+        
+        # Prepare meta fields
+        meta_title = title  # Use original title as meta_title
+        meta_keywords = keyword  # Use plural field name
+        focus_keyword = keyword  # Use the same keyword
+        meta_image = featured_image
+        
+        # Prepare OG fields (same as meta fields)
+        og_title = payload.get('og_title', title)
+        og_description = payload.get('og_description', meta_description)
+        
+        # Prepare Twitter fields (same as meta fields)
+        twitter_title = payload.get('twitter_title', title)
+        twitter_description = payload.get('twitter_description', meta_description)
+        
+        # Create or update the blog post in our database
+        post, created = BlogPostPayload.objects.update_or_create(
+            title=title,
+            defaults={
+                'content': content,
+                'excerpt': excerpt,
+                'status': 'draft',  # Always save as draft initially
+                'slug': payload.get('slug', slugify(title)),
+                'meta_title': meta_title,
+                'meta_description': meta_description[:320],
+                'meta_keywords': meta_keywords,
+                'focus_keyword': focus_keyword,
+                'meta_image': meta_image,
+                'og_title': og_title[:100],
+                'og_description': og_description[:200],
+                'twitter_title': twitter_title[:100],
+                'twitter_description': twitter_description[:200],
+                'author_id': 1,  # Always use author ID 1
+                'language': payload.get('language', 'en'),
+                'word_count': len(content.split()),
+                'reading_time': max(1, len(content.split()) // 200),
+                'scheduled_at': scheduled_at,  # Set from keyword scheduled_time
+                'published_at': None,  # Will be set when published to WP
+            }
+        )
+        
+        # Handle categories
+        if 'categories' in payload:
+            post.categories = payload['categories']
+            post.save()
+        
+        logger.info(f"Successfully {'created' if created else 'updated'} blog post in database: {post.id}")
+        logger.info(f"SAVED IN DB: {post.id} - {title}")
+        
+        # Add the database ID to the payload for the next task
+        payload['db_post_id'] = post.id
+        payload['db_post_title'] = title
+        
+        # Chain to save_to_wp task
+        return save_to_wp.s(payload, status).apply_async()
         
     except Exception as e:
         error_msg = f"Error in save_blog_post: {str(e)}"
         logger.error(error_msg, exc_info=True)
         raise self.retry(exc=e, countdown=60, max_retries=3)
 
-@shared_task(bind=True, name='autopublish.keyword_content.tasks.combine_results')
-def combine_results(self, *args, **kwargs):
+
+@shared_task(bind=True, name="autopublish.keyword_content.tasks.save_to_wp")
+def save_to_wp(self, payload, status='draft'):
     """
-    Combine image processing results with previous task results.
-    
-    This task can be used in a chain where the previous task's results need to be 
-    combined with the current task's results.
+    Post the blog post to WordPress via API.
     
     Args:
-        *args: Positional arguments from previous tasks
-        **kwargs: Keyword arguments including:
-            - image_results: Results from image processing
-            - language: Language code (default: 'en')
-            - country: Country code (default: 'us')
-            - blog_plan: Blog plan data (optional)
-            - scraped_data: Scraped data (optional)
-            
+        payload: The prepared payload with post data
+        status: Status of the post ('draft', 'publish', 'pending')
+        
     Returns:
-        dict: Combined results with status and data
+        dict: The WordPress API response
     """
-    logger = logging.getLogger(__name__)
-    logger.info("Starting combine_results task")
-    
-    # Initialize default values
-    image_results = {}
-    language = kwargs.get('language', 'en')
-    country = kwargs.get('country', 'us')
-    blog_plan = kwargs.get('blog_plan', {})
-    scraped_data = kwargs.get('scraped_data', {})
-    
     try:
-        # Extract image_results from args or kwargs
-        if args and len(args) > 0:
-            if isinstance(args[0], dict):
-                # If first arg is a dict, it's likely the image_results
-                image_results = args[0]
-            elif len(args) >= 2:
-                # If multiple args, they might be blog_plan and scraped_data
-                blog_plan = args[0] if isinstance(args[0], dict) else {}
-                scraped_data = args[1] if isinstance(args[1], dict) and len(args) > 1 else {}
+        import requests
+        from django.utils.text import slugify
         
-        # Check if we have image_results in kwargs
-        if 'image_results' in kwargs:
-            image_results = kwargs['image_results']
+        # Extract data if it's wrapped
+        if isinstance(payload, dict) and 'data' in payload and isinstance(payload['data'], dict):
+            logger.info("Unwrapping payload data in save_to_wp")
+            payload = payload['data']
+        
+        # Extract post data
+        title = payload.get('title', 'Untitled Post')
+        content = payload.get('content', '')
+        
+        # Prepare categories
+        categories = []
+        if 'categories' in payload and payload['categories']:
+            if isinstance(payload['categories'], (list, tuple)):
+                categories = [int(cat) if str(cat).isdigit() else cat for cat in payload['categories'] if cat]
+                logger.info(f"Using direct categories: {categories}")
+        
+        # If no valid categories, use default (Uncategorized = 1)
+        if not categories:
+            categories = [1]
+            logger.info("No valid categories found, using default category (Uncategorized)")
+        else:
+            logger.info(f"Final categories to use: {categories}")
+        
+        # Get status from payload or use the provided default
+        post_status = payload.get('status', status)
+        if post_status == 'drafted':
+            post_status = 'publish'
+        
+        # Prepare the WordPress API payload
+        wp_payload = {
+            'title': title,
+            'content': content,
+            'excerpt': payload.get('excerpt', ''),
+            'status': post_status,
+            'slug': payload.get('slug', slugify(title)),
+            'categories': categories,
+            'tags': payload.get('tags', []),
+            'meta_title': payload.get('meta_title', title)[:60],
+            'meta_description': payload.get('meta_description', '')[:160],
+            'canonical': payload.get('canonical', ''),
+            'og_title': payload.get('og_title', '')[:100],
+            'og_description': payload.get('og_description', '')[:200],
+            'twitter_title': payload.get('twitter_title', '')[:100],
+            'twitter_description': payload.get('twitter_description', '')[:200],
+            'featured_image': payload.get('featured_image', '')
+        }
+        
+        logger.info(f"Post status set to: {post_status}")
+        logger.info(f"Categories being sent to WordPress: {categories}")
+        
+        # Remove empty values
+        wp_payload = {k: v for k, v in wp_payload.items() if v}
+        
+        # Log the complete payload being sent to WordPress
+        logger.info("="*80)
+        logger.info("WORDPRESS PAYLOAD:")
+        logger.info(f"  Title: {wp_payload.get('title', 'N/A')}")
+        logger.info(f"  Status: {wp_payload.get('status', 'N/A')}")
+        logger.info(f"  Categories: {wp_payload.get('categories', 'N/A')}")
+        logger.info(f"  Slug: {wp_payload.get('slug', 'N/A')}")
+        logger.info(f"  Featured Image: {wp_payload.get('featured_image', 'N/A')}")
+        logger.info(f"  Meta Title: {wp_payload.get('meta_title', 'N/A')}")
+        logger.info(f"  Meta Description: {wp_payload.get('meta_description', 'N/A')}")
+        logger.info(f"  Content Length: {len(wp_payload.get('content', ''))} characters")
+        logger.info("="*80)
+        
+        logger.info(f"Posting to WordPress API: {title}")
+        logger.info(f"PUSHED TO WORDPRESS: {title}")
+        
+        # Make the API request to the custom endpoint
+        domain_link = payload.get('domain_link', 'https://extifixpro.com')
+        api_url = f'{domain_link}/wp-json/thirdparty/v1/create-post'
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+        
+        response = requests.post(api_url, json=wp_payload, headers=headers, timeout=30)
+        response_data = response.json()
+        
+        if response.status_code == 200 and response_data.get('success'):
+            logger.info(f"Successfully posted to WordPress. Post ID: {response_data.get('post_id')}")
             
-        # Log what we found
-        logger.info(f"Combining results - Blog plan: {bool(blog_plan)}, "
-                   f"Scraped data: {bool(scraped_data)}, "
-                   f"Image results: {bool(image_results)}")
-        
-        # Format the combined result
-        combined = {
-            'status': 'success',
-            'data': {
-                'blog_plan': blog_plan,
-                'scraped_data': scraped_data,
-                'image_results': image_results,
-                'language': language,
-                'country': country
+            # Update the database record with published status and timestamp
+            db_post_id = payload.get('db_post_id')
+            if db_post_id:
+                try:
+                    from .models import BlogPostPayload
+                    from django.utils import timezone
+                    
+                    post = BlogPostPayload.objects.get(id=db_post_id)
+                    post.status = 'publish'
+                    post.published_at = timezone.now()
+                    post.save(update_fields=['status', 'published_at'])
+                    logger.info(f"Updated DB post {db_post_id} status to 'publish' and set published_at")
+                except Exception as e:
+                    logger.error(f"Failed to update DB post status: {e}")
+            
+            return {
+                'success': True,
+                'post_id': response_data.get('post_id'),
+                'db_post_id': db_post_id,
+                'message': response_data.get('message', 'Post created successfully'),
+                'url': f"{domain_link}/?p={response_data.get('post_id')}"
             }
-        }
-        
-        logger.info("Successfully combined results")
-        return combined
-        
+        else:
+            error_msg = f"Failed to post to WordPress: {response.status_code} - {response_data}"
+            logger.error(error_msg)
+            raise Exception(error_msg)
+            
     except Exception as e:
-        error_msg = f"Error in combine_results: {str(e)}"
+        error_msg = f"Error in save_to_wp: {str(e)}"
         logger.error(error_msg, exc_info=True)
-        return {
-            'status': 'error',
-            'error': error_msg,
-            'data': {
-                'blog_plan': blog_plan,
-                'scraped_data': scraped_data,
-                'image_results': image_results,
-                'language': language,
-                'country': country
-            }
-        }
+        raise self.retry(exc=e, countdown=60, max_retries=3)
 
-@shared_task(name='autopublish.keyword_content.tasks.identity')
-def identity(*args, **kwargs):
-    """
-    Identity function that returns its input.
-    Used in task chains to pass through results.
-    """
-    if args and len(args) == 1:
-        return args[0]
-    return args or kwargs or None
 
 def prepare_content(kwargs, args):
     try:

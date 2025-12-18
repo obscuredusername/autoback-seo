@@ -12,6 +12,7 @@ from django.utils.text import slugify
 from bson import ObjectId
 import json
 
+
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -100,13 +101,13 @@ async def get_system_user_id():
             user = await sync_to_async(User.objects.filter(is_active=True).first)()
         
         if user:
-            return ObjectId(str(user.id))
+            return user
             
     except Exception as e:
         logger.error(f"Error getting system user: {str(e)}")
         
-    # Fallback to a default ObjectId if no user is found
-    return ObjectId('000000000000000000000001')
+    # Return None if no user is found
+    return None
 
     async def save_news_to_content(article_data, request=None):
         """
@@ -218,24 +219,21 @@ async def get_system_user_id():
             # Get MongoDB connection - always use 'content' database
             db = await get_mongodb_connection()
             
-            # Get author ID - prioritize authenticated user, then system user
+            # Get author - prioritize authenticated user, then system user
             try:
                 if request and hasattr(request, 'user') and request.user.is_authenticated:
-                    author_id = ObjectId(str(request.user.id))
-                    user_email = request.user.email
+                    author = request.user
                 else:
-                    # Get a valid system user ID
-                    author_id = await get_system_user_id()
-                    user_email = 'system@example.com'
-                    logger.info(f"Using system author ID: {author_id}")
+                    # Get a valid system user
+                    author = await get_system_user_id()
+                    if not author:
+                        logger.warning("No author found, using None")
             except Exception as e:
-                logger.error(f"Error getting author ID: {str(e)}")
-                # Fallback to a default ID if all else fails
-                author_id = ObjectId('000000000000000000000001')
-                user_email = 'system@example.com'
+                logger.error(f"Error getting author: {str(e)}")
+                author = None
                 
-            # Create the news post using NewsPost model
-            NewsPost = apps.get_model('news_content', 'NewsPost')
+            # Create the news post using BlogPostPayload model
+            from keyword_content.models import BlogPostPayload
             
             # Handle image URLs
             image_urls = original.get('image_urls', [])
@@ -245,35 +243,30 @@ async def get_system_user_id():
             if image_urls and not meta_image:
                 meta_image = image_urls[0]
             
-            # Create the news post with all required fields
-            news_post = NewsPost(
+            # Create the blog post payload with all required fields
+            news_post = BlogPostPayload(
                 title=title[:500],
                 content=content,
-                excerpt=original.get('description', '')[:500],
+                excerpt=original.get('description', '')[:500] if original.get('description') else '',
                 slug=slug,  # Use the slug we generated earlier
                 status=status,
-                categoryIds=category_ids if isinstance(category_ids, list) else [str(category_ids).strip('"[] ')] if category_ids else [],
-                authorId=str(author_id),
-                user_email=user_email,
-                target_path=target_path,
-                scheduledAt=scheduled_at,
-                publishedAt=None,  # Will be set when published
-                metaTitle=title[:60],
-                metaDescription=original.get('description', '')[:160],
-                metaImage=meta_image,  # Set the meta image (either from original.urlToImage or first image in image_urls)
-                image_urls=image_urls,  # Store all image URLs
+                categories=category_ids if isinstance(category_ids, list) else [str(category_ids).strip('"[] ')] if category_ids else [],
+                author=author,
+                scheduled_at=scheduled_at,
+                meta_title=title[:500],
+                meta_description=original.get('description', '')[:500] if original.get('description') else '',
+                meta_image=meta_image,  # Set the meta image
                 word_count=len(content.split()),
-                readingTime=max(1, len(content.split()) // 200),
-                metadata={}
+                reading_time=max(1, len(content.split()) // 200)
             )
             
             try:
                 # Save the news post
                 await sync_to_async(news_post.save)()
-                logger.info(f"✅ Successfully saved news post with ID: {news_post._id} and slug: {news_post.slug}")
-                logger.info(f"✅ Category IDs: {news_post.categoryIds}")
+                logger.info(f"✅ Successfully saved news post with ID: {news_post.id} and slug: {news_post.slug}")
+                logger.info(f"✅ Categories: {news_post.categories}")
                 
-                return str(news_post._id)
+                return str(news_post.id)
                 
             except Exception as save_error:
                 logger.error(f"❌ Error saving news post: {str(save_error)}")

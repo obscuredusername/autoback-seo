@@ -33,50 +33,7 @@ class BlogPlan(models.Model):
         return f"{self.keyword} ({self.status})"
 
 
-class UserCollection(models.Model):
-    """Model to store user's collections"""
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='collections'
-    )
-    name = models.CharField(max_length=100)
-    slug = models.SlugField(max_length=100, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        app_label = 'keyword_content'
-        unique_together = ('user', 'name')
-        ordering = ['name']
-
-    def __str__(self):
-        return f"{self.user.email} - {self.name}"
-
-    def save(self, *args, **kwargs):
-        if not self.slug:
-            self.slug = slugify(self.name)
-        super().save(*args, **kwargs)
-
-class Category(models.Model):
-    name = models.CharField(max_length=100, unique=True)
-    slug = models.SlugField(max_length=100, unique=True, blank=True)
-    description = models.TextField(blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        app_label = 'keyword_content'
-        verbose_name_plural = 'Categories'
-        ordering = ['name']
-
-    def __str__(self):
-        return self.name
-
-    def save(self, *args, **kwargs):
-        if not self.slug:
-            self.slug = slugify(self.name)
-        super().save(*args, **kwargs)
 
 class BlogPostPayload(models.Model):
     STATUS_CHOICES = [
@@ -97,13 +54,20 @@ class BlogPostPayload(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     
     # Relationships
-    categories = models.ManyToManyField(Category, related_name='blog_posts', blank=True)
+    categories = jsonfield.JSONField(default=list, blank=True)
     author = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name='authored_posts'
+    )
+    profile = models.ForeignKey(
+        'user.Profile',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='posts'
     )
     
     # SEO fields

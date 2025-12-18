@@ -8,7 +8,7 @@ from django.contrib.auth.decorators import login_required
 from django.views.decorators.http import require_http_methods
 from .decorators import admin_required
 import json
-from .models import User, Collection
+from .models import User, Profile
 from django.utils import timezone
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -88,19 +88,7 @@ class UserList(View):
     def get(self, request):
         show = request.GET.get('show', 'users')
         if show == 'collections':
-            # Fetch all collections with their full details
-            collections = []
-            for collection in Collection.objects.all():
-                collections.append({
-                    'id': str(collection.id),
-                    'db_name': collection.db_name,
-                    'collection_name': collection.collection_name,
-                    'full_name': collection.full_name,
-                    'description': collection.description,
-                    'created_at': collection.created_at.isoformat(),
-                    'updated_at': collection.updated_at.isoformat()
-                })
-            return JsonResponse({'collections': collections}, status=200)
+            return JsonResponse({'collections': []}, status=200)
         else:
             # Fetch all users with their collection details
             users = User.objects.all()
@@ -192,71 +180,121 @@ class UserList(View):
         except json.JSONDecodeError:
             return JsonResponse({'error': 'Invalid JSON'}, status=400)
 
+@method_decorator(csrf_exempt, name='dispatch')
+class ProfileList(View):
+    def get(self, request):
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+        
+        profiles = Profile.objects.filter(user=request.user)
+        profiles_data = []
+        for profile in profiles:
+            profiles_data.append({
+                'id': profile.id,
+                'name': profile.name,
+                'language': profile.language,
+                'region': profile.region,
+                'domain_link': profile.domain_link,
+                'created_at': profile.created_at.isoformat(),
+                'updated_at': profile.updated_at.isoformat()
+            })
+        return JsonResponse({'profiles': profiles_data}, status=200)
 
-@method_decorator([csrf_exempt, login_required, admin_required], name='dispatch')
-class CollectionCreateView(View):
     def post(self, request):
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+            
         try:
             data = json.loads(request.body.decode('utf-8'))
-            full_name = data.get('name')  # Expected format: 'db_name.collection_name'
-            description = data.get('description', '')
+            name = data.get('name')
+            language = data.get('language', 'en')
+            region = data.get('region', 'us')
+            domain_link = data.get('domain_link')
             
-            if not full_name:
-                return JsonResponse(
-                    {'error': 'Collection name is required in format "database.collection"'}, 
-                    status=400
-                )
+            if not name:
+                return JsonResponse({'error': 'Name is required'}, status=400)
                 
-            # Split into db_name and collection_name
-            if '.' not in full_name:
-                return JsonResponse(
-                    {'error': 'Collection name must be in format "database.collection"'},
-                    status=400
-                )
-                
-            db_name, collection_name = full_name.split('.', 1)  # Split only on first dot
-            
-            if not db_name or not collection_name:
-                return JsonResponse(
-                    {'error': 'Both database name and collection name are required'},
-                    status=400
-                )
-                
-            # Check if collection with this full_name already exists
-            if Collection.objects.filter(full_name=full_name).exists():
-                return JsonResponse(
-                    {'error': f'A collection with the name "{full_name}" already exists'},
-                    status=400
-                )
-                
-            # Create the new collection
-            collection = Collection.objects.create(
-                db_name=db_name,
-                collection_name=collection_name,
-                full_name=full_name,
-                description=description
+            profile = Profile.objects.create(
+                user=request.user,
+                name=name,
+                language=language,
+                region=region,
+                domain_link=domain_link
             )
             
             return JsonResponse({
-                'message': 'Collection created successfully',
-                'collection': {
-                    'id': str(collection.id),
-                    'db_name': collection.db_name,
-                    'collection_name': collection.collection_name,
-                    'full_name': collection.full_name,
-                    'description': collection.description,
-                    'created_at': collection.created_at.isoformat(),
-                    'updated_at': collection.updated_at.isoformat()
+                'message': 'Profile created successfully',
+                'profile': {
+                    'id': profile.id,
+                    'name': profile.name,
+                    'language': profile.language,
+                    'region': profile.region,
+                    'domain_link': profile.domain_link
                 }
             }, status=201)
             
         except json.JSONDecodeError:
-            return JsonResponse(
-                {'error': 'Invalid JSON'}, 
-                status=400
-            )
-        except Exception as e:
-            return JsonResponse(
-                {'error': str(e)}, 
-                status=500
-            )
+            return JsonResponse({'error': 'Invalid JSON'}, status=400)
+
+@method_decorator(csrf_exempt, name='dispatch')
+class ProfileDetail(View):
+    def get(self, request, profile_id):
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+            
+        try:
+            profile = Profile.objects.get(id=profile_id, user=request.user)
+            return JsonResponse({
+                'profile': {
+                    'id': profile.id,
+                    'name': profile.name,
+                    'language': profile.language,
+                    'region': profile.region,
+                    'domain_link': profile.domain_link,
+                    'created_at': profile.created_at.isoformat(),
+                    'updated_at': profile.updated_at.isoformat()
+                }
+            }, status=200)
+        except Profile.DoesNotExist:
+            return JsonResponse({'error': 'Profile not found'}, status=404)
+
+    def put(self, request, profile_id):
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+            
+        try:
+            profile = Profile.objects.get(id=profile_id, user=request.user)
+            data = json.loads(request.body.decode('utf-8'))
+            
+            profile.name = data.get('name', profile.name)
+            profile.language = data.get('language', profile.language)
+            profile.region = data.get('region', profile.region)
+            profile.domain_link = data.get('domain_link', profile.domain_link)
+            profile.save()
+            
+            return JsonResponse({
+                'message': 'Profile updated successfully',
+                'profile': {
+                    'id': profile.id,
+                    'name': profile.name,
+                    'language': profile.language,
+                    'region': profile.region,
+                    'domain_link': profile.domain_link
+                }
+            }, status=200)
+            
+        except Profile.DoesNotExist:
+            return JsonResponse({'error': 'Profile not found'}, status=404)
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON'}, status=400)
+
+    def delete(self, request, profile_id):
+        if not request.user.is_authenticated:
+            return JsonResponse({'error': 'Authentication required'}, status=401)
+            
+        try:
+            profile = Profile.objects.get(id=profile_id, user=request.user)
+            profile.delete()
+            return JsonResponse({'message': 'Profile deleted successfully'}, status=200)
+        except Profile.DoesNotExist:
+            return JsonResponse({'error': 'Profile not found'}, status=404)

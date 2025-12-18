@@ -45,16 +45,14 @@ class User(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         return self.email
 
-class Collection(models.Model):
+class Profile(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='profiles')
     name = models.CharField(max_length=100)
-    db_name = models.CharField(max_length=100)
-    collection_name = models.CharField(max_length=100)
-    description = models.TextField(blank=True)
+    language = models.CharField(max_length=10, default='en')
+    region = models.CharField(max_length=10, default='us')
+    domain_link = models.URLField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        unique_together = ('db_name', 'collection_name')
-
     def __str__(self):
-        return f"{self.db_name}.{self.collection_name}"
+        return f"{self.user.email} - {self.name}"

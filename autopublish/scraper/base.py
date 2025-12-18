@@ -390,42 +390,42 @@ class WebContentScraper:
         except:
             return False
 
-        @retry(max_retries=3, initial_delay=1, max_delay=10, backoff_factor=2)
-        def scrape_url(self, url, min_length=100, timeout=None):
-            """
-            Scrape content from a single URL
-            """
-            try:
-                print(f"Scraping: {url}")
-                timeout = timeout or self.default_timeout
-                response = self.session.get(url, timeout=timeout)
-                response.raise_for_status()
-                content_type = response.headers.get('content-type', '').lower()
-                if 'html' not in content_type:
-                    return None
-                # Dummy main content extraction (replace with real logic if needed)
-                soup = BeautifulSoup(response.content, 'html.parser')
-                title = soup.title.string if soup.title else url
-                content = soup.get_text(separator=' ', strip=True)
-                content = re.sub(r'\s+', ' ', content).strip()
-                if len(content) < min_length:
-                    print(f"❌ Content too short ({len(content)} < {min_length})")
-                    return None
-                return {
-                    'title': title,
-                    'content': content[:5000],
-                    'url': url,
-                    'content_length': len(content)
-                }
-            except requests.Timeout:
-                print(f"Timeout while scraping {url}")
+    @retry(max_retries=3, initial_delay=1, max_delay=10, backoff_factor=2)
+    def scrape_url(self, url, min_length=100, timeout=None):
+        """
+        Scrape content from a single URL
+        """
+        try:
+            print(f"Scraping: {url}")
+            timeout = timeout or self.default_timeout
+            response = self.session.get(url, timeout=timeout)
+            response.raise_for_status()
+            content_type = response.headers.get('content-type', '').lower()
+            if 'html' not in content_type:
                 return None
-            except requests.ConnectionError:
-                print(f"Connection error while scraping {url}")
+            # Dummy main content extraction (replace with real logic if needed)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            title = soup.title.string if soup.title else url
+            content = soup.get_text(separator=' ', strip=True)
+            content = re.sub(r'\s+', ' ', content).strip()
+            if len(content) < min_length:
+                print(f"❌ Content too short ({len(content)} < {min_length})")
                 return None
-            except Exception as e:
-                print(f"Error scraping {url}: {e}")
-                return None
+            return {
+                'title': title,
+                'content': content[:5000],
+                'url': url,
+                'content_length': len(content)
+            }
+        except requests.Timeout:
+            print(f"Timeout while scraping {url}")
+            return None
+        except requests.ConnectionError:
+            print(f"Connection error while scraping {url}")
+            return None
+        except Exception as e:
+            print(f"Error scraping {url}: {e}")
+            return None
     
     def scrape_multiple_urls(self, urls, target_count=5, delay=2, min_length=100):
         """

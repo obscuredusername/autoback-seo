@@ -316,7 +316,7 @@ class ScrapingService:
         import tempfile
         import uuid
         import boto3
-        from botocore.exceptions import ClientError
+        from botocore.exceptions import ClientError, NoCredentialsError
         
         logger = logging.getLogger(__name__)
         original_url = image_url
@@ -327,13 +327,26 @@ class ScrapingService:
         filename = f"{base_name}_{str(uuid.uuid4())[:8]}.webp"  # Add UUID for uniqueness
         
         # S3 Configuration
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.getenv('AWS_S3_REGION_NAME', 'eu-north-1')
-        )
+        # S3 Configuration
+        aws_access_key_id = os.getenv('AWS_ACCESS_KEY_ID')
+        aws_secret_access_key = os.getenv('AWS_SECRET_ACCESS_KEY')
+        region_name = os.getenv('AWS_S3_REGION_NAME', 'eu-north-1')
         bucket_name = os.getenv('AWS_STORAGE_BUCKET_NAME', 'autopublisher-crm')
+
+        try:
+            if aws_access_key_id and aws_secret_access_key:
+                s3_client = boto3.client(
+                    's3',
+                    aws_access_key_id=aws_access_key_id,
+                    aws_secret_access_key=aws_secret_access_key,
+                    region_name=region_name
+                )
+            else:
+                # Fallback to default credentials chain (e.g. ~/.aws/credentials, IAM role)
+                s3_client = boto3.client('s3', region_name=region_name)
+        except Exception as e:
+            logger.error(f"Failed to initialize S3 client: {str(e)}")
+            return original_url
         
         temp_path = None
         watermarked_path = None
@@ -350,8 +363,11 @@ class ScrapingService:
             else:
                 # Download the image
                 timeout = aiohttp.ClientTimeout(total=60)
+                headers = {
+                    'User-Agent': random.choice(self.user_agents)
+                }
                 async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(image_url) as response:
+                    async with session.get(image_url, headers=headers, ssl=False) as response:
                         if response.status != 200:
                             logger.error(f"Failed to download image: {image_url} (Status: {response.status})")
                             return original_url
@@ -456,7 +472,7 @@ class ScrapingService:
                     logger.info(f"Successfully uploaded image to S3: {s3_url}")
                     return s3_url
                     
-                except ClientError as e:
+                except (ClientError, NoCredentialsError) as e:
                     logger.error(f"Error uploading to S3: {str(e)}")
                     return original_url
                 

@@ -1283,180 +1283,23 @@ class ContentGenerator:
             
             # Clean the rephrased content
             cleaned_content = self._clean_html_content(rephrased)
-            processed_images = []  # This will store only the processed image URLs that are actually used
             
             print(f"✅ Cleaned rephrased content. Length: {len(cleaned_content)} characters", flush=True)
             
             word_count = len(cleaned_content.split())
             print(f"✅ Content length: {word_count} words")
-            print(f"✅ Processing {len(images) if images else 0} images" if images else "✅ No images to process", flush=True)
             
-            # Process and insert media if available
-            if images and isinstance(images, list) and len(images) > 0:
-                print(f"🖼️  Starting image processing for {len(images)} images", flush=True)
-                image_generator = ImageGenerator()
-                processed_images = []  # Store processed image URLs
-                
-                # First, filter and process only spreadtheword.fr images
-                valid_images = []
-                for img in images:
-                    if not img:
-                        continue
-                    # Check if image is from spreadtheword.fr or needs processing
-                    if 'spreadtheword.fr' in img:
-                        valid_images.append(img)
-                        print(f"✅ Found valid image from spreadtheword.fr: {img}", flush=True)
-                    else:
-                        print(f"⚠️  Skipping non-spreadtheword.fr image: {img}", flush=True)
-                
-                # If we don't have enough valid images, process some from the original list
-                if len(valid_images) < 2:
-                    print(f"ℹ️  Only {len(valid_images)} valid images found, processing more...", flush=True)
-                    for img in images:
-                        if len(valid_images) >= 2:
-                            break
-                        if not img or 'spreadtheword.fr' in img:
-                            continue
-                        try:
-                            print(f"🔄 Processing external image: {img}", flush=True)
-                            
-                            # Call the local API to process the image
-                            async with aiohttp.ClientSession() as session:
-                                payload = {"image_links": [img]}
-                                try:
-                                    async with session.post(
-                                        "https://nigga.cemantix.net/generator/download-image/",
-                                        json=payload,
-                                        headers={"Content-Type": "application/json"}
-                                    ) as response:
-                                        if response.status == 200:
-                                            result = await response.json()
-                                            if result.get("status") == "completed" and result.get("results"):
-                                                image_url = result["results"][0]["processed_url"]
-                                                if 'spreadtheword.fr' in image_url:
-                                                    valid_images.append(image_url)
-                                                    print(f"✅ Processed and saved to spreadtheword.fr: {image_url}", flush=True)
-                                                    continue
-                                except Exception as e:
-                                    print(f"⚠️  Error calling image processing API: {str(e)}", flush=True)
-                        except Exception as e:
-                            print(f"⚠️  Failed to process or invalid domain for image: {img}", flush=True)
-                
-                # Now process up to 2 valid images
-                for i in range(min(2, len(valid_images))):
-                    try:
-                        img_url = valid_images[i]
-                        print(f"📌 Processing valid image {i+1}: {img_url}", flush=True)
-                        
-                        # Only add to processed_images if not already there (to avoid duplicates)
-                        if img_url not in processed_images:
-                            processed_images.append(img_url)
-                            print(f"✅ Added valid image {i+1}: {img_url}", flush=True)
-                            
-                            # Create image HTML with unique alt text
-                            img_alt = f"{rephrased_title} - Image {i+1}"
-                            img_tag = f'<div style="text-align: center; margin: 20px 0;">\n' \
-                                     f'  <img src="{img_url}" alt="{img_alt}" style="max-width: 100%; height: auto;">\n' \
-                                     f'</div>\n\n'
-                            # For first unique image, add at the top
-                            if len(processed_images) == 1:
-                                cleaned_content = img_tag + cleaned_content
-                                print(f"✅ Inserted first unique image at the top", flush=True)
-                            # For second unique image, try to insert after 5th heading
-                            elif len(processed_images) == 2:
-                                headings = re.findall(r'<h[1-6][^>]*>.*?</h[1-6]>', cleaned_content)
-                                if len(headings) >= 5:
-                                    # Find the position of the 5th heading
-                                    fifth_heading = headings[4]
-                                    insert_pos = cleaned_content.find(fifth_heading) + len(fifth_heading)
-                                    cleaned_content = cleaned_content[:insert_pos] + '\n' + img_tag + cleaned_content[insert_pos:]
-                                    print(f"✅ Inserted second unique image after 5th heading", flush=True)
-                                else:
-                                    # If less than 5 headings, insert after first paragraph
-                                    para_match = re.search(r'</p>', cleaned_content)
-                                    if para_match:
-                                        insert_pos = para_match.end()
-                                        cleaned_content = cleaned_content[:insert_pos] + '\n' + img_tag + cleaned_content[insert_pos:]
-                                        print(f"✅ Inserted second unique image after first paragraph", flush=True)
-                                    else:
-                                        # Fallback to end of content
-                                        cleaned_content += '\n' + img_tag
-                                        print(f"✅ Inserted second unique image at the end (no suitable position found)", flush=True)
-                                
-                    except Exception as e:
-                        print(f"⚠️  Error processing image {i+1}: {str(e)}", flush=True)
-                        import traceback
-                        traceback.print_exc()
-                
-            # Add video at the end if available
-            if video_links:
-                try:
-                    print(f"🎥 Processing video link: {video_links}", flush=True)
-                    # Ensure the video URL is properly formatted
-                    if not video_links.startswith(('http://', 'https://')):
-                        video_links = f'https://{video_links}'
-                        
-                    video_html = f'<div style="text-align: center; margin: 40px 0;">\n' \
-                               f'  <h3>Related Video</h3>\n' \
-                               f'  <div style="position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; max-width: 100%;">\n' \
-                               f'    <iframe src="{video_links}" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;" frameborder="0" allowfullscreen></iframe>\n' \
-                               f'  </div>\n' \
-                               f'</div>'
-                    cleaned_content += '\n\n' + video_html
-                    print(f"✅ Added video to the end of content", flush=True)
-                except Exception as e:
-                    print(f"⚠️  Error adding video: {str(e)}", flush=True)
-                    import traceback
-                    traceback.print_exc()
-                
-                if not processed_images:
-                    print("⚠️  No valid images were processed and injected", flush=True)
-                else:
-                    print(f"✅ Successfully processed {len(processed_images)} images", flush=True)
-            
-            # Clean up any potential HTML issues after modifications
-            cleaned_content = self._clean_html_content(cleaned_content)
-            
-            # Ensure we have exactly 2 images from spreadtheword.fr
-            filtered_processed_images = []
-            for img in processed_images:
-                if 'spreadtheword.fr' in img and len(filtered_processed_images) < 2:
-                    filtered_processed_images.append(img)
-            
-            # If we still don't have 2 images, add placeholders
-            while len(filtered_processed_images) < 2:
-                # Add a placeholder image from spreadtheword.fr
-                placeholder_url = 'https://spreadtheword.fr/images/placeholder.jpg'
-                filtered_processed_images.append(placeholder_url)
-                print(f"ℹ️  Added placeholder image {len(filtered_processed_images)}", flush=True)
-            
-            # Log the images we're including
-            if filtered_processed_images:
-                print(f"✅ Including {len(filtered_processed_images)} image URLs in the final payload:")
-                for url in filtered_processed_images:
-                    print(f"    - {url}")
-            else:
-                print("⚠️  No valid images found to include in the payload")
-            
-            # Calculate final word count after all processing
-            final_word_count = len(re.sub(r'<[^>]+>', ' ', cleaned_content).split())
-            print(f"📊 Final content statistics:")
-            print(f"   - Original length: {len(content.split())} words")
-            print(f"   - Final length: {final_word_count} words")
-            print(f"   - Included images: {len(filtered_processed_images)}")
-            logger.info(f"✅ Final content statistics:")
-            logger.info(f"   - Original length: {len(content.split())} words")
-            logger.info(f"   - Final length: {final_word_count} words")
-            logger.info(f"   - Included images: {len(filtered_processed_images)}")
-            logger.info(f"   - Images: {filtered_processed_images}")
+            # Use provided images directly without processing
+            # The upstream task (process_news_task) is responsible for processing images via process_and_save_images
+            final_image_urls = images if images else []
             
             return {
                 'title': rephrased_title,
                 'content': cleaned_content,
                 'original_title': clean_title,
                 'original_length': len(content.split()),
-                'rephrased_length': final_word_count,
-                'image_urls': filtered_processed_images,
+                'rephrased_length': word_count,
+                'image_urls': final_image_urls,
                 'video_links': video_links if video_links else None
             }
             

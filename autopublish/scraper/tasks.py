@@ -196,3 +196,47 @@ def process_scraping_task(self, *args, **kwargs):
             'message': error_msg,
             'data': None
         }
+
+@shared_task(bind=True, name='scraper.tasks.scrape_news_task')
+def scrape_news_task(self, categories, country='us', language='en', vendor='google'):
+    """
+    Task to scrape news using ScrapingService directly.
+    """
+    try:
+        from .service import ScrapingService
+        import asyncio
+        
+        logger.info(f"Starting news scraping task for categories: {categories}")
+        
+        # Initialize service
+        service = ScrapingService()
+        
+        # Run async fetch_news in event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            # Prepare categories in the format expected by fetch_news
+            # categories arg is expected to be a list of dicts: [{'name': 'tech', 'num': 5}, ...]
+            # If it's just a list of strings, convert it
+            formatted_categories = []
+            for cat in categories:
+                if isinstance(cat, str):
+                    formatted_categories.append({'name': cat, 'num': 5})
+                elif isinstance(cat, dict):
+                    formatted_categories.append(cat)
+            
+            result = loop.run_until_complete(service.fetch_news(
+                categories=formatted_categories,
+                country=country,
+                language=language,
+                vendor=vendor
+            ))
+            
+            return result
+            
+        finally:
+            loop.close()
+            
+    except Exception as e:
+        logger.error(f"Error in scrape_news_task: {str(e)}", exc_info=True)
+        return {'status': 'error', 'error': str(e)}

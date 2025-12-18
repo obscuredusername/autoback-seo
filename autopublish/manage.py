@@ -9,7 +9,9 @@ from django.core.management.commands.runserver import Command as runserver
 def main():
     """Run administrative tasks."""
     # Load environment variables from .env file
-    load_dotenv()
+    # Load environment variables from .env file
+    env_path = Path(__file__).resolve().parent.parent / '.env'
+    load_dotenv(dotenv_path=env_path)
     
     # Add the project root to Python path (one level up from manage.py)
     project_root = str(Path(__file__).resolve().parent.parent)

@@ -7,7 +7,7 @@ class KeywordContentConfig(AppConfig):
     
     def ready(self):
         # Import signals
-        import keyword_content.signals  # noqa
+        from . import signals  # noqa
         
         # Setup Celery beat schedule
         try:
