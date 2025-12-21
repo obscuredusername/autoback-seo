@@ -361,17 +361,37 @@ class ScrapingService:
                 with open(image_url.replace('file://', ''), 'rb') as f:
                     image_data = f.read()
             else:
-                # Download the image
+                # Download the image with retry logic
                 timeout = aiohttp.ClientTimeout(total=60)
                 headers = {
                     'User-Agent': random.choice(self.user_agents)
                 }
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(image_url, headers=headers, ssl=False) as response:
-                        if response.status != 200:
-                            logger.error(f"Failed to download image: {image_url} (Status: {response.status})")
+                
+                max_retries = 3
+                retry_delay = 2
+                image_data = None
+                
+                for attempt in range(max_retries):
+                    try:
+                        async with aiohttp.ClientSession(timeout=timeout) as session:
+                            async with session.get(image_url, headers=headers, ssl=False) as response:
+                                if response.status != 200:
+                                    logger.error(f"Failed to download image: {image_url} (Status: {response.status})")
+                                    return original_url
+                                image_data = await response.read()
+                                break  # Success, exit retry loop
+                    except (aiohttp.ClientConnectorError, aiohttp.ClientError, ConnectionResetError) as e:
+                        logger.warning(f"Attempt {attempt + 1}/{max_retries} failed for {image_url}: {str(e)}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff
+                        else:
+                            logger.error(f"All retry attempts failed for {image_url}")
                             return original_url
-                        image_data = await response.read()
+                
+                if not image_data:
+                    logger.error(f"Failed to download image after {max_retries} attempts: {image_url}")
+                    return original_url
         
             # Process the image
             with Image.open(io.BytesIO(image_data)) as img:

@@ -141,6 +141,15 @@ class NewsSchedulerView(APIView):
                         
                         data['target_path'] = target_path
                         self.logger.info(f"Final target_path set to: {target_path}")
+
+                        # Get domain_link from user profile if not in request
+                        if 'domain_link' not in data:
+                            if hasattr(user, 'domain_link') and user.domain_link:
+                                data['domain_link'] = user.domain_link
+                                self.logger.info(f"Using domain_link from user model: {data['domain_link']}")
+                            elif hasattr(user, 'profile') and hasattr(user.profile, 'domain_link'):
+                                data['domain_link'] = user.profile.domain_link
+                                self.logger.info(f"Using domain_link from user profile: {data['domain_link']}")
                         
                     except User.DoesNotExist:
                         error_msg = f'User with ID {user_id} not found'

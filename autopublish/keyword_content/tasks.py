@@ -36,113 +36,107 @@ def process_keyword_task(self, request_body):
         # Parse the request body if it's a string
         if isinstance(request_body, str):
             request_body = json.loads(request_body)
- 
 
-        scraper_data = {
-            "keywords": request_body.get("keywords", []),
-            "language": request_body.get("language", "en"),
-            "country": request_body.get("country", "us"),
-            "target_path": request_body.get("target_path", "CRM.posts"),
-        }
+        # Process each keyword
+        tasks = []
+        for keyword_data in request_body.get('keywords', []):
+            keyword = keyword_data['text']
+            scheduled_time = keyword_data.get('scheduled_time', None)
+            language = request_body.get('language', 'en')
+            country = request_body.get('country', 'us')
+            available_categories = request_body.get('available_categories', [])
 
-
-        keyword = request_body['keywords'][0]['text']
-        scheduled_time = request_body['keywords'][0].get('scheduled_time', None)
-        language = request_body.get('language', 'en')
-        country = request_body.get('country', 'us')
-        available_categories = request_body.get('available_categories', [])
-        
-        # Create the task chain with chord for parallel execution
-        task_chain = (
-            # Step 1: Create blog plan record and get metadata
-            signature(
-                'autopublish.keyword_content.tasks.fetch_keyword_content_prereqs',
-                kwargs={
-                    'keyword': keyword,
-                    'language': language,
-                    'country': country,
-                    'available_categories': available_categories,
-                    'scheduled_time': scheduled_time,
-                }
-            ) | 
-            # Step 2: Run parallel tasks and process results
-            chord(
-                # Parallel tasks
-                [
-                    signature(
-                        'autopublish.content_generator.tasks.get_blog_plan',
-                        kwargs={
-                            'keyword': keyword,
-                            'language': language,
-                            'country': country,
-                            'available_categories': available_categories
-                        },
-                        immutable=True
-                    ),
-                    signature(
-                        'autopublish.scraper.tasks.process_scraping_task',
-                        kwargs={
-                            'keyword': keyword,
-                            'language': language,
-                            'country': country,
-                            'max_results': 5
-                        },
-                        immutable=True
-                    ),
-                    signature(
-                        'autopublish.scraper.tasks.process_and_save_images',
-                        kwargs={
-                            'query': keyword,
-                            'max_results': 5,
-                            'language': language,
-                            'country': country
-                        },
-                        immutable=True
-                    )
-                ],
-                # Callback to process parallel results
+            # Create the task chain for each keyword
+            task_chain = (
+                # Step 1: Create blog plan record and get metadata
                 signature(
-                    'autopublish.keyword_content.tasks.process_parallel_results',
+                    'autopublish.keyword_content.tasks.fetch_keyword_content_prereqs',
                     kwargs={
                         'keyword': keyword,
                         'language': language,
                         'country': country,
                         'available_categories': available_categories,
-                        'scheduled_time': scheduled_time
+                        'scheduled_time': scheduled_time,
                     }
-                ) |
-                # Step 3: Generate content with the structured data
-                signature(
-                    'autopublish.content_generator.tasks.generate_keyword_content'
-                ) |
-                # Step 4: Prepare payload (inject images, format data)
-                signature(
-                    'autopublish.content_generator.tasks.prepare_payload',
-                    kwargs={
-                        'user_email': request_body.get('user_email'),
-                        'domain_link': request_body.get('domain_link'),
-                        'target_path': request_body.get('target_path', 'CRM.posts')
-                    }
-                ) |
-                # Step 5: Save blog post
-                signature(
-                    'autopublish.keyword_content.tasks.save_blog_post',
-                    kwargs={
-                        'user_email': request_body.get('user_email'),
-                        'status': 'publish',
-                        'scheduled_time': scheduled_time
-                    }
+                ) | 
+                # Step 2: Run parallel tasks and process results
+                chord(
+                    # Parallel tasks
+                    [
+                        signature(
+                            'autopublish.content_generator.tasks.get_blog_plan',
+                            kwargs={
+                                'keyword': keyword,
+                                'language': language,
+                                'country': country,
+                                'available_categories': available_categories
+                            },
+                            immutable=True
+                        ),
+                        signature(
+                            'autopublish.scraper.tasks.process_scraping_task',
+                            kwargs={
+                                'keyword': keyword,
+                                'language': language,
+                                'country': country,
+                                'max_results': 5
+                            },
+                            immutable=True
+                        ),
+                        signature(
+                            'autopublish.scraper.tasks.process_and_save_images',
+                            kwargs={
+                                'query': keyword,
+                                'max_results': 5,
+                                'language': language,
+                                'country': country
+                            },
+                            immutable=True
+                        )
+                    ],
+                    # Callback to process parallel results
+                    signature(
+                        'autopublish.keyword_content.tasks.process_parallel_results',
+                        kwargs={
+                            'keyword': keyword,
+                            'language': language,
+                            'country': country,
+                            'available_categories': available_categories,
+                            'scheduled_time': scheduled_time
+                        }
+                    ) |
+                    # Step 3: Generate content with the structured data
+                    signature(
+                        'autopublish.content_generator.tasks.generate_keyword_content'
+                    ) |
+                    # Step 4: Prepare payload (inject images, format data)
+                    signature(
+                        'autopublish.content_generator.tasks.prepare_payload',
+                        kwargs={
+                            'user_email': request_body.get('user_email'),
+                            'domain_link': request_body.get('domain_link'),
+                            'target_path': request_body.get('target_path', 'CRM.posts')
+                        }
+                    ) |
+                    # Step 5: Save blog post
+                    signature(
+                        'autopublish.keyword_content.tasks.save_blog_post',
+                        kwargs={
+                            'user_email': request_body.get('user_email'),
+                            'status': 'publish',
+                            'scheduled_time': scheduled_time
+                        }
+                    )
                 )
             )
-        )
-        
-        # Start the chain and return the result
-        return task_chain.apply_async()
-        
+            tasks.append(task_chain)
+
+        # Use group to run all keyword task chains in parallel
+        group(tasks).apply_async()
+
     except Exception as e:
         logger.error(f"Unexpected error in process_keyword_task: {str(e)}", exc_info=True)
         raise  # Re-raise the exception to mark the task as failed
-        raise
 
 @shared_task(bind=True, name="autopublish.keyword_content.tasks.fetch_keyword_content_prereqs")
 def fetch_keyword_content_prereqs(self, keyword: str, language: str = "en", country: str = "us", available_categories: list = None, scheduled_time: str = None):
@@ -302,105 +296,47 @@ def process_parallel_results(self, results, **kwargs):
 @shared_task(bind=True, name="autopublish.keyword_content.tasks.publish_scheduled_posts")
 def publish_scheduled_posts(self):
     """
-    Celery Beat task to check for and publish scheduled posts.
+    Celery Beat task to check for and publish scheduled posts from PostgreSQL.
     
     This task:
-    1. Finds posts with status 'pending' or 'scheduled' where scheduledAt is in the past
-    2. Validates that scheduledAt is set and in the past
-    3. Publishes them to their target location if target_path is specified
-    4. Updates their status to 'published' and sets publishedAt timestamp
-    5. Handles errors and updates status to 'failed' if needed
+    1. Finds posts with status 'scheduled' where scheduled_at is in the past
+    2. Calls save_to_wp task for each post to publish to WordPress
+    3. save_to_wp handles the actual publishing and status updates
     
     Returns:
         dict: Summary of the publishing operation
     """
-    published_count = 0
-    error_msg = None
+    from .models import BlogPostPayload
+    
+    scheduled_count = 0
     
     try:
         logger.info("Starting publish_scheduled_posts task")
         now = timezone.now()
         
-        # Initialize MongoDB client
-        mongo_uri = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/')
-        mongo_db = os.getenv('MONGODB_NAME', 'autopublish')
+        # Query PostgreSQL for posts that are scheduled and due for publishing
+        posts_to_publish = BlogPostPayload.objects.filter(
+            status='scheduled',
+            scheduled_at__lte=now
+        ).select_related('author')
         
-        logger.info(f"Connecting to MongoDB: {mongo_uri}, DB: {mongo_db}")
-        client = MongoClient(mongo_uri)
-        db = client[mongo_db]
-        
-        # Find posts that are scheduled and due for publishing
-        posts_collection = db['blog_posts']
-        
-        # Find posts that are scheduled and due for publishing
-        query = {
-            'status': {'$in': ['pending', 'scheduled']},
-            'scheduledAt': {'$lte': now}
-        }
-        
-        posts_to_publish = list(posts_collection.find(query))
-        logger.info(f"Found {len(posts_to_publish)} posts to publish")
+        logger.info(f"Found {posts_to_publish.count()} posts to publish")
         
         for post in posts_to_publish:
             try:
-                post_id = post.get('_id')
-                logger.info(f"Processing post: {post_id}")
+                logger.info(f"Scheduling post for publishing: {post.id} - {post.title}")
                 
-                # Get target collection from post or use default
-                target_path = post.get('target_path', 'CRM.posts')
-                if '.' in target_path:
-                    target_db_name, target_collection = target_path.split('.', 1)
-                else:
-                    target_db_name = 'CRM'
-                    target_collection = target_path
-                
-                # Update post status to 'publishing'
-                update_result = posts_collection.update_one(
-                    {'_id': post_id},
-                    {
-                        '$set': {
-                            'status': 'publishing',
-                            'updatedAt': timezone.now().isoformat()
-                        }
-                    }
+                # Call save_to_wp task for this post
+                save_to_wp.apply_async(
+                    args=[post.id],
+                    kwargs={'status': 'publish'}
                 )
-                
-                # Get the target collection and insert the post
-                target_db = client[target_db_name]
-                result = target_db[target_collection].insert_one(post)
-                
-                # Update the post to mark it as published
-                update_result = posts_collection.update_one(
-                    {'_id': post_id},
-                    {
-                        '$set': {
-                            'status': 'published',
-                            'publishedAt': datetime.utcnow(),
-                            'updatedAt': datetime.utcnow(),
-                            'target_collection': f"{target_db_name}.{target_collection}"
-                        }
-                    }
-                )
-                
-                logger.info(f"Successfully published post {post_id} to {target_db_name}.{target_collection}")
-                published_count += 1
+                scheduled_count += 1
                 
             except Exception as e:
-                error_msg = f"Error publishing post {post_id}: {str(e)}"
+                error_msg = f"Error scheduling post {post.id}: {str(e)}"
                 logger.error(error_msg)
                 logger.error(traceback.format_exc())
-                
-                # Update the post status to failed
-                posts_collection.update_one(
-                    {'_id': post_id},
-                    {
-                        '$set': {
-                            'status': 'failed',
-                            'error_message': str(e),
-                            'updatedAt': timezone.now().isoformat()
-                        }
-                    }
-                )
     
     except Exception as e:
         error_msg = f"Error in publish_scheduled_posts: {str(e)}"
@@ -408,18 +344,11 @@ def publish_scheduled_posts(self):
         logger.error(traceback.format_exc())
         raise  # Re-raise to mark the task as failed in Celery
     
-    finally:
-        if 'client' in locals():
-            try:
-                client.close()
-            except Exception as e:
-                logger.error(f"Error closing MongoDB connection: {str(e)}")
-    
     return {
         'status': 'completed',
-        'published_posts': published_count,
-        'timestamp': datetime.utcnow().isoformat(),
-        'message': f'Successfully published {published_count} posts'
+        'scheduled_for_publishing': scheduled_count,
+        'timestamp': timezone.now().isoformat(),
+        'message': f'Scheduled {scheduled_count} posts for publishing'
     }
     
 
@@ -473,184 +402,7 @@ def process_blog_plan_scraped_data_and_images(self, results, **kwargs):
         logger.error(traceback.format_exc())
         # Return whatever data we have, even if image processing failed
         return blog_plan_data if 'blog_plan_data' in locals() else {}
-
-
-@shared_task(bind=True, name="autopublish.keyword_content.tasks.post_to_wordpress")
-def post_to_wordpress(self, payload, status='draft'):
-    """
-    Save the generated content to the database and post to WordPress.
-    
-    Args:
-        payload: The prepared payload containing blog post data
-        status: Status of the post ('draft', 'publish', 'pending')
-        
-    Returns:
-        dict: Result of the operation with status and post data
-    """
-    logger = logging.getLogger(__name__)
-    
-    try:
-        from .models import BlogPostPayload
-        from django.contrib.auth import get_user_model
-        import requests
-        from django.conf import settings
-        from django.utils.text import slugify
-        
-        # Get or create a default author
-        User = get_user_model()
-        default_author = User.objects.filter(is_superuser=True).first()
-        
-        # Extract data if it's wrapped in a result dict from prepare_payload
-        if isinstance(payload, dict) and 'data' in payload and isinstance(payload['data'], dict):
-            logger.info("Unwrapping payload data in post_to_wordpress")
-            payload = payload['data']
-            
-        # Extract post data - title should come from OpenAI generation
-        title = payload.get('title', '')
-        if not title or title == 'Unknown':
-            # Try to extract from blog_plan if available
-            if 'blog_plan' in payload and isinstance(payload['blog_plan'], dict):
-                title = payload['blog_plan'].get('title', 'Untitled Post')
-            else:
-                title = 'Untitled Post'
-                logger.warning("No title found in payload, using default")
-        
-        content = payload.get('content', '')
-        meta_description = payload.get('meta_description', '')[:320]
-        
-        # Create or update the blog post in our database
-        post, created = BlogPostPayload.objects.update_or_create(
-            title=title,
-            defaults={
-                'content': content,
-                'status': status,
-                'meta_description': meta_description,
-                'author': default_author,
-                'language': payload.get('language', 'en'),
-                'word_count': len(content.split()),
-                'reading_time': max(1, len(content.split()) // 200),
-            }
-        )
-        
-        # Handle categories
-        if 'categories' in payload:
-            # Store categories as a list in the JSONField
-            post.categories = [c for c in payload['categories'] if isinstance(c, str)]
-            post.save()
-        
-        logger.info(f"Successfully {'created' if created else 'updated'} blog post in database: {post.id}")
-        logger.info(f"SAVED IN DB: {post.id} - {title}")
-        
-        # Prepare WordPress API payload
-        
-        # Prepare categories - handle both categories and available_categories
-        categories = []
-        
-        # First try to get from available_categories if it exists
-        if 'available_categories' in payload and payload['available_categories']:
-            # available_categories is a tuple of (category_names, category_name_to_id)
-            if (isinstance(payload['available_categories'], (list, tuple)) and 
-                len(payload['available_categories']) == 2 and
-                isinstance(payload['available_categories'][1], dict)):
-                
-                category_name_to_id = payload['available_categories'][1]
-                # Try to find a matching category based on the title or use the first available
-                if 'category' in payload and payload['category'] in category_name_to_id:
-                    categories = [int(category_name_to_id[payload['category']])]
-                    logger.info(f"Using category from payload: {payload['category']} (ID: {categories[0]})")
-                elif category_name_to_id:  # Fallback to first available category
-                    first_cat_id = next(iter(category_name_to_id.values()))
-                    categories = [int(first_cat_id)]
-                    logger.info(f"Using first available category: {categories[0]}")
-        
-        # Fallback to direct categories if available_categories wasn't found or used
-        if not categories and 'categories' in payload and payload['categories']:
-            if isinstance(payload['categories'], (list, tuple)):
-                categories = [int(cat) if str(cat).isdigit() else cat for cat in payload['categories'] if cat]
-                logger.info(f"Using direct categories: {categories}")
-        
-        # If still no valid categories, use default (Uncategorized = 1)
-        if not categories:
-            categories = [1]
-            logger.info("No valid categories found, using default category (Uncategorized)")
-        else:
-            logger.info(f"Final categories to use: {categories}")
-        
-        # Get status from payload or use the provided default
-        post_status = payload.get('status', status)  # Use status from payload or parameter
-        if post_status == 'drafted':  # Fix any legacy 'drafted' status
-            post_status = 'publish'
-            
-        # Prepare the WordPress API payload for the custom endpoint
-        wp_payload = {
-            'title': title,
-            'content': content,
-            'excerpt': payload.get('excerpt', ''),
-            'status': post_status,  # Use status from payload or default
-            'slug': payload.get('slug', slugify(title)),
-            'categories': categories,
-            'tags': payload.get('tags', []),
-            'meta_title': payload.get('meta_title') or title[:60],
-            'meta_description': payload.get('meta_description', '')[:160],
-            'canonical': payload.get('canonical', ''),
-            'og_title': payload.get('og_title', '')[:100],
-            'og_description': payload.get('og_description', '')[:200],
-            'twitter_title': payload.get('twitter_title', '')[:100],
-            'twitter_description': payload.get('twitter_description', '')[:200],
-            'featured_image': payload.get('featured_image', '')
-        }
-        
-        logger.info(f"Post status set to: {post_status}")
-        logger.info(f"Categories being sent to WordPress: {categories}")
-        
-        # Remove empty values
-        wp_payload = {k: v for k, v in wp_payload.items() if v}
-        
-        # Log the complete payload being sent to WordPress
-        logger.info("="*80)
-        logger.info("WORDPRESS PAYLOAD:")
-        logger.info(f"  Title: {wp_payload.get('title', 'N/A')}")
-        logger.info(f"  Status: {wp_payload.get('status', 'N/A')}")
-        logger.info(f"  Categories: {wp_payload.get('categories', 'N/A')}")
-        logger.info(f"  Slug: {wp_payload.get('slug', 'N/A')}")
-        logger.info(f"  Featured Image: {wp_payload.get('featured_image', 'N/A')}")
-        logger.info(f"  Meta Title: {wp_payload.get('meta_title', 'N/A')}")
-        logger.info(f"  Meta Description: {wp_payload.get('meta_description', 'N/A')}")
-        logger.info(f"  Content Length: {len(wp_payload.get('content', ''))} characters")
-        logger.info("="*80)
-        
-        logger.info(f"Posting to WordPress API: {title}")
-        logger.info(f"PUSHED IN WORDPRESS: {title}")
-        
-        # Make the API request to the custom endpoint
-        domain_link = payload.get('domain_link', 'https://extifixpro.com')
-        api_url = f'{domain_link}/wp-json/thirdparty/v1/create-post'
-        headers = {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-        }
-        
-        response = requests.post(api_url, json=wp_payload, headers=headers, timeout=30)
-        response_data = response.json()
-        
-        if response.status_code == 200 and response_data.get('success'):
-            logger.info(f"Successfully posted to WordPress. Post ID: {response_data.get('post_id')}")
-            return {
-                'success': True,
-                'post_id': response_data.get('post_id'),
-                'message': response_data.get('message', 'Post created successfully'),
-                'url': f"{domain_link}/?p={response_data.get('post_id')}"
-            }
-        else:
-            error_msg = f"Failed to post to WordPress: {response.status_code} - {response_data}"
-            logger.error(error_msg)
-            raise Exception(error_msg)
-            
-    except Exception as e:
-        error_msg = f"Error in post_to_wordpress: {str(e)}"
-        logger.error(error_msg, exc_info=True)
-        raise  # Re-raise the exception to mark the task as failed
-        
+      
 @shared_task(bind=True, name="autopublish.keyword_content.tasks.save_blog_post")
 def save_blog_post(self, payload, user_email=None, status='draft', scheduled_time=None):
     """
@@ -764,6 +516,7 @@ def save_blog_post(self, payload, user_email=None, status='draft', scheduled_tim
                 'reading_time': max(1, len(content.split()) // 200),
                 'scheduled_at': scheduled_at,  # Set from keyword scheduled_time
                 'published_at': None,  # Will be set when published to WP
+                'canonical_url': payload.get('domain_link')
             }
         )
         
@@ -772,15 +525,26 @@ def save_blog_post(self, payload, user_email=None, status='draft', scheduled_tim
             post.categories = payload['categories']
             post.save()
         
+        # Set status based on whether it's scheduled or not
+        if scheduled_at:
+            post.status = 'scheduled'
+            post.save(update_fields=['status'])
+            logger.info(f"Post {post.id} scheduled for {scheduled_at}")
+        else:
+            post.status = 'draft'
+            post.save(update_fields=['status'])
+        
         logger.info(f"Successfully {'created' if created else 'updated'} blog post in database: {post.id}")
-        logger.info(f"SAVED IN DB: {post.id} - {title}")
+        logger.info(f"SAVED IN DB: {post.id} - {title} (status: {post.status})")
         
-        # Add the database ID to the payload for the next task
-        payload['db_post_id'] = post.id
-        payload['db_post_title'] = title
-        
-        # Chain to save_to_wp task
-        return save_to_wp.s(payload, status).apply_async()
+        # Return the post data
+        return {
+            'success': True,
+            'post_id': post.id,
+            'title': title,
+            'status': post.status,
+            'scheduled_at': scheduled_at.isoformat() if scheduled_at else None
+        }
         
     except Exception as e:
         error_msg = f"Error in save_blog_post: {str(e)}"
@@ -789,75 +553,99 @@ def save_blog_post(self, payload, user_email=None, status='draft', scheduled_tim
 
 
 @shared_task(bind=True, name="autopublish.keyword_content.tasks.save_to_wp")
-def save_to_wp(self, payload, status='draft'):
+def save_to_wp(self, post_id, status='publish'):
     """
-    Post the blog post to WordPress via API.
+    Post the blog post to WordPress via API and update status in PostgreSQL.
     
     Args:
-        payload: The prepared payload with post data
-        status: Status of the post ('draft', 'publish', 'pending')
+        post_id: The database ID of the BlogPostPayload to publish
+        status: Status to set in WordPress ('draft', 'publish', 'pending')
         
     Returns:
-        dict: The WordPress API response
+        dict: The WordPress API response with status updates
     """
+    from .models import BlogPostPayload
+    import requests
+    from django.utils.text import slugify
+    
     try:
-        import requests
-        from django.utils.text import slugify
+        # Get the post from database
+        post = BlogPostPayload.objects.get(id=post_id)
+        logger.info(f"Publishing post {post_id}: {post.title}")
         
-        # Extract data if it's wrapped
-        if isinstance(payload, dict) and 'data' in payload and isinstance(payload['data'], dict):
-            logger.info("Unwrapping payload data in save_to_wp")
-            payload = payload['data']
+        # Update status to 'publishing'
+        post.status = 'publishing'
+        post.save(update_fields=['status', 'updated_at'])
         
-        # Extract post data
-        title = payload.get('title', 'Untitled Post')
-        content = payload.get('content', '')
+        # Log original categories for debugging
+        logger.info(f"Original categories from DB: {post.categories}")
+        logger.info(f"Categories type: {type(post.categories)}")
         
-        # Prepare categories
+        # Process categories with better handling
         categories = []
-        if 'categories' in payload and payload['categories']:
-            if isinstance(payload['categories'], (list, tuple)):
-                categories = [int(cat) if str(cat).isdigit() else cat for cat in payload['categories'] if cat]
-                logger.info(f"Using direct categories: {categories}")
+        if post.categories:
+            if isinstance(post.categories, str):
+                # Handle string input that looks like a list (e.g., '[2]')
+                if post.categories.startswith('[') and post.categories.endswith(']'):
+                    try:
+                        # Safely evaluate the string as a Python literal
+                        import ast
+                        categories = ast.literal_eval(post.categories)
+                        if not isinstance(categories, list):
+                            categories = [categories]  # Convert single value to list
+                    except (ValueError, SyntaxError) as e:
+                        logger.warning(f"Failed to parse categories string: {post.categories} - Error: {e}")
+                        categories = [cat.strip() for cat in post.categories.strip('[]').split(',') if cat.strip()]
+                else:
+                    # Handle comma-separated string
+                    categories = [cat.strip() for cat in post.categories.split(',') if cat.strip()]
+            elif isinstance(post.categories, list):
+                categories = post.categories
+            else:
+                logger.warning(f"Unexpected categories format: {post.categories}")
         
-        # If no valid categories, use default (Uncategorized = 1)
-        if not categories:
-            categories = [1]
-            logger.info("No valid categories found, using default category (Uncategorized)")
-        else:
-            logger.info(f"Final categories to use: {categories}")
+        # Convert to integers where possible and validate
+        processed_categories = []
+        for cat in categories:
+            try:
+                # Clean up the string (remove any brackets, quotes, etc.)
+                cat_str = str(cat).strip('[]\'" ')
+                if cat_str.isdigit():
+                    processed_categories.append(int(cat_str))
+                else:
+                    logger.warning(f"Skipping non-numeric category: {cat}")
+            except (ValueError, TypeError, AttributeError) as e:
+                logger.warning(f"Skipping invalid category: {cat} - Error: {str(e)}")
         
-        # Get status from payload or use the provided default
-        post_status = payload.get('status', status)
-        if post_status == 'drafted':
-            post_status = 'publish'
+        # Fallback to default category (Uncategorized = 1) if no valid categories
+        if not processed_categories:
+            logger.warning(f"No valid categories found. Defaulting to Uncategorized (ID: 1)")
+            processed_categories = [1]
+            
+        logger.info(f"Processed categories for WordPress: {processed_categories}")
         
         # Prepare the WordPress API payload
         wp_payload = {
-            'title': title,
-            'content': content,
-            'excerpt': payload.get('excerpt', ''),
-            'status': post_status,
-            'slug': payload.get('slug', slugify(title)),
+            'title': post.title,
+            'content': post.content,
+            'excerpt': post.excerpt or '',
+            'status': status,
+            'slug': post.slug or slugify(post.title),
             'categories': categories,
-            'tags': payload.get('tags', []),
-            'meta_title': payload.get('meta_title', title)[:60],
-            'meta_description': payload.get('meta_description', '')[:160],
-            'canonical': payload.get('canonical', ''),
-            'og_title': payload.get('og_title', '')[:100],
-            'og_description': payload.get('og_description', '')[:200],
-            'twitter_title': payload.get('twitter_title', '')[:100],
-            'twitter_description': payload.get('twitter_description', '')[:200],
-            'featured_image': payload.get('featured_image', '')
+            'meta_title': post.meta_title or post.title[:60],
+            'meta_description': (post.meta_description or '')[:160],
+            'canonical': post.canonical_url or '',
+            'og_title': (post.og_title or post.title)[:100],
+            'og_description': (post.og_description or post.meta_description or '')[:200],
+            'twitter_title': (post.twitter_title or post.title)[:100],
+            'twitter_description': (post.twitter_description or post.meta_description or '')[:200],
+            'featured_image': post.meta_image or ''
         }
-        
-        logger.info(f"Post status set to: {post_status}")
-        logger.info(f"Categories being sent to WordPress: {categories}")
         
         # Remove empty values
         wp_payload = {k: v for k, v in wp_payload.items() if v}
         
-        # Log the complete payload being sent to WordPress
+        # Log the payload
         logger.info("="*80)
         logger.info("WORDPRESS PAYLOAD:")
         logger.info(f"  Title: {wp_payload.get('title', 'N/A')}")
@@ -868,55 +656,103 @@ def save_to_wp(self, payload, status='draft'):
         logger.info(f"  Meta Title: {wp_payload.get('meta_title', 'N/A')}")
         logger.info(f"  Meta Description: {wp_payload.get('meta_description', 'N/A')}")
         logger.info(f"  Content Length: {len(wp_payload.get('content', ''))} characters")
+        logger.info(f"  Canonical URL: {wp_payload.get('canonical', 'N/A')}")
         logger.info("="*80)
         
-        logger.info(f"Posting to WordPress API: {title}")
-        logger.info(f"PUSHED TO WORDPRESS: {title}")
+        # Make the API request to WordPress
+        from urllib.parse import urlparse
         
-        # Make the API request to the custom endpoint
-        domain_link = payload.get('domain_link', 'https://extifixpro.com')
-        api_url = f'{domain_link}/wp-json/thirdparty/v1/create-post'
+        # Get domain from post.payload if available, otherwise use canonical_url
+        domain_link = None
+        if hasattr(post, 'payload') and isinstance(post.payload, dict):
+            domain_link = post.payload.get('domain_link')
+
+        if not domain_link and hasattr(post, 'canonical_url'):
+            domain_link = post.canonical_url
+            
+        # Fallback: Try to get from author profile
+        if not domain_link and post.author:
+            try:
+                if hasattr(post.author, 'domain_link') and post.author.domain_link:
+                    domain_link = post.author.domain_link
+                    logger.info(f"Found domain_link in author model: {domain_link}")
+                elif hasattr(post.author, 'profile') and hasattr(post.author.profile, 'domain_link'):
+                    domain_link = post.author.profile.domain_link
+                    logger.info(f"Found domain_link in author profile: {domain_link}")
+            except Exception as e:
+                logger.warning(f"Failed to get domain_link from author profile: {e}")
+
+        if not domain_link:
+            raise ValueError("No domain_link found in post payload, canonical_url, or author profile")
+            
+        # Ensure domain has a scheme and clean it up
+        if not domain_link.startswith(('http://', 'https://')):
+            domain_link = f'https://{domain_link}'
+            
+        # Extract just the domain and scheme
+        parsed = urlparse(domain_link)
+        base_domain = f"{parsed.scheme}://{parsed.netloc}"
+        
+        api_url = f'{base_domain.rstrip("/")}/wp-json/thirdparty/v1/create-post'
+        
+        # Set canonical URL in the payload if we have it
+        canonical_url = None
+        if hasattr(post, 'canonical_url') and post.canonical_url:
+            canonical_url = post.canonical_url
+        elif hasattr(post, 'payload') and isinstance(post.payload, dict) and 'canonical_url' in post.payload:
+            canonical_url = post.payload['canonical_url']
+            
+        if canonical_url and 'canonical' not in wp_payload:
+            wp_payload['canonical'] = canonical_url
+            logger.info(f"Setting canonical URL to: {canonical_url}")
+            
         headers = {
             'Content-Type': 'application/json',
             'Accept': 'application/json'
         }
         
+        logger.info(f"Posting to WordPress at: {api_url}")
         response = requests.post(api_url, json=wp_payload, headers=headers, timeout=30)
         response_data = response.json()
         
         if response.status_code == 200 and response_data.get('success'):
-            logger.info(f"Successfully posted to WordPress. Post ID: {response_data.get('post_id')}")
+            # Update the post to mark it as published
+            post.status = 'published'
+            post.published_at = timezone.now()
+            post.save(update_fields=['status', 'published_at', 'updated_at'])
             
-            # Update the database record with published status and timestamp
-            db_post_id = payload.get('db_post_id')
-            if db_post_id:
-                try:
-                    from .models import BlogPostPayload
-                    from django.utils import timezone
-                    
-                    post = BlogPostPayload.objects.get(id=db_post_id)
-                    post.status = 'publish'
-                    post.published_at = timezone.now()
-                    post.save(update_fields=['status', 'published_at'])
-                    logger.info(f"Updated DB post {db_post_id} status to 'publish' and set published_at")
-                except Exception as e:
-                    logger.error(f"Failed to update DB post status: {e}")
+            logger.info(f"Successfully published post {post_id} to WordPress. WP Post ID: {response_data.get('post_id')}")
             
             return {
                 'success': True,
-                'post_id': response_data.get('post_id'),
-                'db_post_id': db_post_id,
+                'wp_post_id': response_data.get('post_id'),
+                'db_post_id': post_id,
                 'message': response_data.get('message', 'Post created successfully'),
-                'url': f"{domain_link}/?p={response_data.get('post_id')}"
+                'url': f"{base_domain.rstrip('/')}/?p={response_data.get('post_id')}"
             }
         else:
-            error_msg = f"Failed to post to WordPress: {response.status_code} - {response_data}"
+            error_msg = f"WordPress API error: {response.status_code} - {response_data}"
             logger.error(error_msg)
             raise Exception(error_msg)
             
+    except BlogPostPayload.DoesNotExist:
+        error_msg = f"Post {post_id} not found in database"
+        logger.error(error_msg)
+        raise Exception(error_msg)
+        
     except Exception as e:
-        error_msg = f"Error in save_to_wp: {str(e)}"
+        error_msg = f"Error in save_to_wp for post {post_id}: {str(e)}"
         logger.error(error_msg, exc_info=True)
+        
+        # Update the post status to failed
+        try:
+            post = BlogPostPayload.objects.get(id=post_id)
+            post.status = 'failed'
+            post.last_error = str(e)
+            post.save(update_fields=['status', 'last_error', 'updated_at'])
+        except Exception as update_error:
+            logger.error(f"Failed to update post status to failed: {update_error}")
+        
         raise self.retry(exc=e, countdown=60, max_retries=3)
 
 

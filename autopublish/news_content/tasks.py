@@ -47,6 +47,7 @@ def process_news_task(self, request_body):
         vendor = data.get('vendor', 'google')
         times = data.get('times', [])
         target_path_from_request = data.get('target_path')
+        domain_link = data.get('domain_link')
 
         # Prepare categories for scraping
         processed_categories = []
@@ -129,7 +130,7 @@ def process_news_task(self, request_body):
                     from celery import group
                     from scraper.tasks import process_and_save_images
                     from content_generator.tasks import rephrase_content_task
-                    from keyword_content.tasks import process_blog_plan_scraped_data_and_images, post_to_wordpress
+                    from keyword_content.tasks import process_blog_plan_scraped_data_and_images, save_blog_post
                     
                     # 1. Parallel Execution: Image Generation & Content Rephrasing
                     logger.info(f"Starting parallel tasks for article: {category_item.get('title')}")
@@ -160,18 +161,21 @@ def process_news_task(self, request_body):
 
                     # 2. Prepare Payload for process_blog_plan_scraped_data_and_images
                     # We map the rephrased result to what looks like a 'blog_plan'
+                    # Use the category ID from the item if available, otherwise fall back to name
+                    category_id = item.get('id', item['name'])
                     payload_base = {
                         'title': rephrased_result.get('title'),
                         'content': rephrased_result.get('rephrased_content'),
-                        'categories': [item["name"]],
-                        'category': item["name"],
-                        'status': 'publish', # Default to publish as per request flow
+                        'categories': [category_id],
+                        'category': str(category_id),  # Ensure it's a string for consistency
+                        'status': 'publish',  # Will be changed to 'scheduled' later
                         'language': language,
                         'meta_description': rephrased_result.get('rephrased_content', '')[:160],
                         # Pass through other metadata
                         'original_url': category_item.get('url'),
                         'source': source_name,
-                        'image_urls': rephrased_result.get('image_urls', [])
+                        'image_urls': rephrased_result.get('image_urls', []),
+                        'domain_link': domain_link
                     }
                     
                     # 3. Combine Data (Images + Content)
@@ -183,22 +187,39 @@ def process_news_task(self, request_body):
                             args=[[payload_base, image_result]]
                         ).get()
                     
-                    # 4. Post to WordPress
-                    # post_to_wordpress expects payload and status
-                    logger.info(f"Posting article to WordPress: {payload_base['title']}")
+                    # 4. Save to database for scheduled publishing
+                    from keyword_content.tasks import save_blog_post
+                    
+                    # Add scheduled time (immediate or scheduled)
+                    if index < len(category_times):
+                        scheduled_time_str = category_times[index]
+                        try:
+                            # Parse ISO format string to datetime
+                            scheduled_time = datetime.fromisoformat(scheduled_time_str.replace('Z', '+00:00'))
+                        except ValueError:
+                            logger.warning(f"Invalid time format: {scheduled_time_str}, using current time")
+                            scheduled_time = datetime.utcnow()
+                    else:
+                        scheduled_time = datetime.utcnow()
+                    
+                    # Save the article to database
                     with allow_join_result():
-                        post_result = post_to_wordpress.apply(
+                        save_result = save_blog_post.apply(
                             args=[combined_payload],
-                            kwargs={'status': 'publish'}
+                            kwargs={
+                                'status': 'scheduled',  # Will be published by the beat task
+                                'scheduled_time': scheduled_time.isoformat()
+                            }
                         ).get()
                     
                     # Add to results list
                     article_data = {
                         'title': payload_base['title'],
                         'url': category_item.get('url'),
-                        'wordpress_post_id': post_result.get('post_id'),
-                        'wordpress_url': post_result.get('url'),
-                        'status': 'published' if post_result.get('success') else 'failed'
+                        'post_id': save_result.get('post_id'),
+                        'status': 'scheduled',
+                        'scheduled_at': scheduled_time.isoformat(),
+                        'publish_status': 'scheduled'  # Will be updated by the scheduled task
                     }
                     results.append(article_data)
                     index += 1
