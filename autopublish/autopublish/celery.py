@@ -52,7 +52,7 @@ app.conf.update(
     broker_connection_retry_on_startup=True,
     beat_schedule={
         'process-scheduled-posts': {
-            'task': 'process_scheduled_posts',
+            'task': 'autopublish.content.tasks.process_scheduled_posts',
             'schedule': 60.0,  # Run every minute
             'options': {
                 'expires': 30.0,  # Expire after 30 seconds to prevent overlap
@@ -64,7 +64,7 @@ app.conf.update(
 
 # Configure task discovery after Django is fully loaded
 app.autodiscover_tasks(
-    packages=['keyword_content', 'content_generator', 'content'],
+    packages=['content_generator', 'content', 'scraper'],
 )
 
 # Import tasks after Celery is set up

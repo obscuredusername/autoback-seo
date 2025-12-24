@@ -1220,16 +1220,4 @@ class GNewsFetcher:
                 results[category_name] = []
         
         return results
-                
-                # Sort by published date if available, then take the requested number of articles
-        articles = sorted(
-            unique_articles,
-            key=lambda x: x.get('published_at', ''), 
-            reverse=True
-        )[:article_count]
-        
-        results[category_name] = articles[:article_count]
-        logger.info(f"Fetched {len(articles)}/{article_count} articles for category: {category_name}")
-        
-        return results
 

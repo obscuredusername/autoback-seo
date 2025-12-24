@@ -1,18 +1,18 @@
-import json
 import os
 import logging
-import time
-from datetime import datetime, timezone, datetime
-from urllib.parse import urlparse, urlunparse
 import asyncio
 import aiohttp
 import random
-from bs4 import BeautifulSoup
-from typing import List, Dict, Any, Optional, Union, Tuple
+from datetime import datetime, timezone
+from typing import Dict, Any, List, Optional, Union, Tuple, Callable, Coroutine
 from .utils import retry
-from .news_section import GoogleNewsScraper, YahooScraper, BingScraper, GNewsFetcher
 from .base import WebContentScraper
+
 logger = logging.getLogger(__name__)
+
+from .news_section import BingScraper, YahooScraper, GoogleNewsScraper, GNewsFetcher
+
+
 
 class ScrapingService:
     """
@@ -29,7 +29,6 @@ class ScrapingService:
             max_concurrent: Maximum number of concurrent requests for async operations
             timeout: Request timeout in seconds
         """
-        from .base import WebContentScraper
         self.scraper = WebContentScraper()
         self.output_dir = "scraped_data"
         self.max_concurrent = max_concurrent
@@ -41,262 +40,34 @@ class ScrapingService:
             'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         ]
         
-        # Initialize proxies
-        self.proxies = self._initialize_proxies()
-        self.current_proxy_index = 0
-        self._ensure_output_dir()
-        
         # Initialize news scrapers
         self.news_scrapers = {
             'google': GoogleNewsScraper(),
-            'yahoo': YahooScraper(),
             'bing': BingScraper(),
+            'yahoo': YahooScraper(),
             'gnews': GNewsFetcher()
         }
-    
-    def _initialize_proxies(self) -> List[str]:
-        """
-        Initialize and return a list of proxy servers from environment variables.
         
-        Returns:
-            List of proxy URLs
-        """
-        proxy_list = os.getenv('PROXY_LIST', '').split(',')
-        # Remove any empty strings and strip whitespace
-        return [p.strip() for p in proxy_list if p.strip()]
-
-    def _get_next_proxy(self) -> Optional[str]:
-        """
-        Get the next proxy in rotation.
-        
-        Returns:
-            str or None: The next proxy URL or None if no proxies are available
-        """
-        if not self.proxies:
-            return None
-            
-        proxy = self.proxies[self.current_proxy_index]
-        self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxies)
-        return proxy
+        self._ensure_output_dir()
         
     def _ensure_output_dir(self):
         """Ensure the output directory exists"""
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
-    
-    @retry(max_retries=3, initial_delay=1, max_delay=10, backoff_factor=2)
-    async def _fetch_url_async(self, session: aiohttp.ClientSession, url: str, extract_selectors: dict = None, max_retries: int = 3) -> Optional[Dict[str, Any]]:
-        """
-        Asynchronously fetch and parse a single URL with proxy and retry support.
-        
-        Args:
-            session: aiohttp ClientSession
-            url: URL to scrape
-            extract_selectors: Dictionary of CSS selectors for specific elements to extract
-            max_retries: Maximum number of retry attempts with different proxies
-            
-        Returns:
-            Dictionary containing scraped data or None if all retries fail
-        """
-        headers = {
-            'User-Agent': random.choice(self.user_agents),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Encoding': 'gzip, deflate',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-        }
-        
-        last_error = None
-        
-        for attempt in range(max_retries):
-            proxy_url = self._get_next_proxy()
-            proxy_auth = None
-            
-            # Parse proxy URL and set up auth
-            if proxy_url:
-                try:
-                    # Parse the proxy URL
-                    parsed = urlparse(proxy_url)
-                    
-                    # Extract components
-                    proxy_host = parsed.hostname
-                    proxy_port = parsed.port or 80
-                    username = parsed.username
-                    password = parsed.password
-                    
-                    # Reconstruct proxy URL without auth
-                    proxy_url = f"http://{proxy_host}:{proxy_port}"
-                    
-                    # Set up auth if credentials are provided
-                    if username and password:
-                        proxy_auth = aiohttp.BasicAuth(username, password)
-                        print(f"Using proxy with auth: {username}:***@{proxy_host}:{proxy_port}")
-                    else:
-                        print(f"Using proxy without auth: {proxy_url}")
-                        
-                except Exception as e:
-                    print(f"Error parsing proxy URL {proxy_url}: {str(e)}")
-                    proxy_url = None
-            
-            try:
-                print(f"Attempt {attempt + 1}/{max_retries} fetching {url} with proxy {proxy_url}")
-                
-                # Prepare proxy string with auth if needed
-                proxy_str = None
-                if proxy_url:
-                    if proxy_auth:
-                        proxy_str = f"http://{proxy_auth.login}:{proxy_auth.password}@{proxy_url.split('//')[-1]}"
-                    else:
-                        proxy_str = proxy_url
-                
-                # Make the request
-                async with session.get(
-                    url,
-                    headers=headers,
-                    proxy=proxy_str,
-                    timeout=aiohttp.ClientTimeout(total=30),
-                    ssl=False,
-                    allow_redirects=True
-                ) as response:
-                    if response.status == 200:
-                        content = await response.text()
-                        soup = BeautifulSoup(content, 'html.parser')
-                        
-                        # Extract title and content
-                        title = soup.title.string if soup.title else "No title"
-                        content_text = ' '.join([p.get_text() for p in soup.find_all('p')])
-                        
-                        result = {
-                            'url': url,
-                            'title': title,
-                            'content': content_text,
-                            'status': 'success'
-                        }
-                        
-                        # Extract specific elements if selectors are provided
-                        if extract_selectors:
-                            extracted = {}
-                            for key, selector in extract_selectors.items():
-                                element = soup.select_one(selector)
-                                if element:
-                                    extracted[key] = element.get_text(strip=True)
-                            if extracted:
-                                result['extracted'] = extracted
-                        
-                        return result
-                    else:
-                        last_error = f"HTTP {response.status}"
-                        print(f"Request failed with status {response.status}")
-                        
-                last_error = str(e)
-                logger.warning(f"Attempt {attempt + 1}/{max_retries} failed for {url} with proxy {proxy_url}: {last_error}")
-                if attempt < max_retries - 1:
-                    # Add a small delay before retrying with next proxy
-                    await asyncio.sleep(1)
-                continue
-            except Exception as e:
-                last_error = str(e)
-                logger.error(f"Unexpected error fetching {url}: {last_error}", exc_info=True)
-                return None
-        
-        # If we get here, all retries failed
-        logger.error(f"Failed to fetch {url} after {max_retries} attempts. Last error: {last_error}")
-        return None
 
-    @retry(max_retries=2, initial_delay=1, max_delay=5, backoff_factor=1.5)
-    async def scrape_urls_async(self, urls: List[str], extract_selectors: dict = None) -> List[Dict[str, Any]]:
-        """
-        Asynchronously scrape multiple URLs in parallel with proxy support.
-        
-        Args:
-            urls: List of URLs to scrape
-            extract_selectors: Dictionary of CSS selectors for specific elements to extract
-            
-        Returns:
-            List of dictionaries containing scraped data
-        """
-        if not urls:
-            return []
-            
-        # Filter out invalid URLs
-        valid_urls = [url for url in urls if url and not self._is_youtube_url(url)]
-        
-        # Create a semaphore to limit concurrency
-        sem = asyncio.Semaphore(self.max_concurrent)
-        
-        async def fetch_with_semaphore(session, url):
-            async with sem:
-                return await self._fetch_url_async(session, url, extract_selectors)
-        
-        # Use a single session for all requests
-        async with aiohttp.ClientSession(timeout=self.timeout) as session:
-            tasks = [fetch_with_semaphore(session, url) for url in valid_urls]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-        # Filter out exceptions and failed requests
-        return [r for r in results if isinstance(r, dict)]
+    def image_links(self, query: str, max_results: int = 10) -> List[str]:
+        """Delegate image search to the base scraper."""
+        return self.scraper.bing_image_scraper(query, max_results=max_results)
 
-    def _run_async_scrape(self, urls, extract_selectors):
-        """Helper method to run async code from sync context"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(self.scrape_urls_async(urls, extract_selectors))
-        finally:
-            loop.close()
-            asyncio.set_event_loop(None)
-
-    @retry(max_retries=2, initial_delay=1, max_delay=5, backoff_factor=1.5)
-    def scrape_url(self, url, extract_selectors=None, timeout=30):
-        """
-        Synchronous wrapper for scraping a single URL.
-        
-        Args:
-            url (str): The URL to scrape
-            extract_selectors (dict): Dictionary of CSS selectors for specific elements to extract
-            timeout (int): Request timeout in seconds
-            
-        Returns:
-            dict: Dictionary containing scraped data or None if failed
-        """
-        if not url:
-            return None
-            
-        try:
-            # Check if we're in an event loop
-            try:
-                loop = asyncio.get_running_loop()
-                # If we're in an event loop, create a task
-                future = asyncio.create_task(self.scrape_urls_async([url], extract_selectors))
-                results = asyncio.run_coroutine_threadsafe(future, loop).result()
-                return results[0] if results else None
-            except RuntimeError:
-                # No event loop, run synchronously
-                results = self._run_async_scrape([url], extract_selectors)
-                return results[0] if results else None
-        except Exception as e:
-            logger.error(f"Error in scrape_url: {str(e)}")
-            return None
-
-         
-
-    def _is_youtube_url(self, url):
-        """Check if URL is from YouTube"""
-        youtube_domains = ['youtube.com', 'youtu.be', 'youtube-nocookie.com']
-        return any(domain in url.lower() for domain in youtube_domains)
-
-    @retry(max_retries=3, initial_delay=1, max_delay=10, backoff_factor=2)
-    def image_links(self, query, max_results=2):
-        # Always limit to exactly 2 images
-        links = self.scraper.bing_image_scraper(query, max_results=2)
-        logger.info(f"Retrieved {len(links)} image links for query: {query}")
-        return links
-    
-    @retry(max_retries=3, initial_delay=1, max_delay=10, backoff_factor=2)
-    def video_links(self, query):
+    def video_links(self, query: str) -> str:
+        """Delegate video search to the base scraper."""
         return self.scraper.scrape_youtube_video(query)
-        
+
+
+
+    
+
+
     async def save_and_process_image(self, image_url: str, keyword: str) -> str:
         """
         Save image to S3 in WebP format with 65% quality, add text watermark,
@@ -510,37 +281,6 @@ class ScrapingService:
             except Exception as e:
                 logger.error(f"Error cleaning up temp files: {str(e)}")
     
-    def _get_unique_articles(self, links, existing_urls=None):
-        """
-        Filter out duplicate URLs and return unique ones
-        
-        Args:
-            links: List of URLs to filter
-            existing_urls: Set of already seen URLs (optional)
-            
-        Returns:
-            tuple: (list of unique URLs, set of all seen URLs)
-        """
-        if existing_urls is None:
-            existing_urls = set()
-        
-        unique_links = []
-        for link in links:
-            # Skip if URL is None, empty, or from YouTube
-            if not link or self._is_youtube_url(link):
-                continue
-                
-            # Normalize URL for comparison (remove query params, fragments, etc.)
-            parsed = urlparse(link)
-            clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-            clean_url = clean_url.rstrip('/')
-            
-            if clean_url not in existing_urls:
-                existing_urls.add(clean_url)
-                unique_links.append(link)
-        
-        return unique_links, existing_urls
-        
     async def fetch_news(
         self,
         categories: List[Dict[str, Any]],
@@ -607,32 +347,32 @@ class ScrapingService:
                 # Get the appropriate scraper for the current vendor
                 scraper = self.news_scrapers[current_vendor]
                 
-                # Handle different vendors with their specific implementations
-                if current_vendor == 'gnews':
-                    result = await self._fetch_gnews(
-                        scraper, 
-                        categories, 
-                        country, 
-                        language,
-                        max_articles_per_category
+                # Call the appropriate method based on scraper type
+                if hasattr(scraper, 'fetch_news'):
+                    # For standard scrapers with fetch_news method
+                    result = await scraper.fetch_news(
+                        categories=categories,
+                        country=country,
+                        language=language,
+                        max_articles=max_articles_per_category
                     )
-                elif current_vendor == 'yahoo':
-                    result = await self._fetch_yahoo(
-                        scraper, 
-                        categories, 
-                        country, 
-                        language,
-                        max_articles_per_category
+                elif hasattr(scraper, 'fetch_by_category'):
+                    # For GNewsFetcher
+                    category_results = await scraper.fetch_by_category(
+                        categories=categories,
+                        country=country,
+                        language=language,
+                        max_articles_per_category=max_articles_per_category
                     )
+                    # Convert to the expected format
+                    result = {
+                        'categories': category_results.get('categories', {}),
+                        'total_articles': category_results.get('total_articles', 0),
+                        'vendor': current_vendor,
+                        'success': True
+                    }
                 else:
-                    # For other scrapers that use the standard interface
-                    result = await self._fetch_bing(
-                        scraper, 
-                        categories, 
-                        country, 
-                        language,
-                        max_articles_per_category
-                    )
+                    raise ValueError(f"Scraper for {current_vendor} doesn't have a supported fetch method")
                 
                 # Ensure the result has the expected structure
                 if 'success' not in result:
@@ -642,35 +382,33 @@ class ScrapingService:
                 if 'categories' not in result:
                     result['categories'] = {}
                 if 'total_articles' not in result:
-                    result['total_articles'] = sum(len(articles) for articles in result.get('categories', {}).values())
+                    result['total_articles'] = sum(len(articles) for articles in result['categories'].values())
                 
-                # If we got results, return them
-                if result.get('total_articles', 0) > 0:
-                    # Add metadata about the original request and any fallbacks used
-                    result['original_vendor'] = original_vendor
-                    if current_vendor != original_vendor:
-                        result['fallback_used'] = current_vendor
-                    return result
+                # Add original vendor and fallback info
+                result['original_vendor'] = original_vendor
+                if current_vendor != original_vendor:
+                    result['fallback_used'] = current_vendor
                 
-                logger.info(f"No results from {current_vendor}, trying next available source...")
+                logger.info(f"Successfully fetched {result['total_articles']} articles from {current_vendor}")
+                return result
                 
             except Exception as e:
-                last_error = e
-                logger.warning(f"Error fetching from {current_vendor}: {str(e)}")
-                continue
-        
-        # If we get here, all vendors failed or returned no results
-        error_msg = f"Failed to fetch news from any source. Last error: {str(last_error) if last_error else 'No results from any vendor'}"
-        logger.error(error_msg)
-        return {
-            'success': False,
-            'error': error_msg,
-            'categories': {cat['name']: [] for cat in categories},
-            'total_articles': 0,
-            'vendor': original_vendor,
-            'original_vendor': original_vendor
-        }
-
+                last_error = str(e)
+                logger.warning(f"Failed to fetch from {current_vendor}: {last_error}")
+                if current_vendor != vendors_to_try[-1]:  # If not the last vendor to try
+                    logger.info(f"Trying next vendor...")
+                    continue
+                
+                # If we get here, all vendors failed
+                logger.error(f"All vendors failed. Last error: {last_error}")
+                return {
+                    'success': False,
+                    'error': f"All vendors failed. Last error: {last_error}",
+                    'vendor': original_vendor,
+                    'categories': {},
+                    'total_articles': 0
+                }
+            
     async def _fetch_gnews(
         self, 
         gnews_fetcher, 
@@ -757,13 +495,13 @@ class ScrapingService:
             
             return formatted_result
         except Exception as e:
-            logger.error(f"Error fetching news from Yahoo: {str(e)}", exc_info=True)
+            logger.error(f"Error fetching news from GNews: {str(e)}", exc_info=True)
             # Return empty result structure on error
             return {
                 'success': False,
                 'categories': {cat['name']: [] for cat in categories},
                 'total_articles': 0,
-                'vendor': 'yahoo',
+                'vendor': 'gnews',
                 'error': str(e)
             }
             
@@ -892,7 +630,7 @@ class ScrapingService:
                 'success': True,
                 'categories': {},
                 'total_articles': 0,
-                'vendor': 'yahoo'
+                'vendor': 'bing'
             }
             
             if result and 'categories' in result:
@@ -930,7 +668,7 @@ class ScrapingService:
                                 'content': article.get('content', ''),
                                 'url': article.get('url', ''),
                                 'published_at': article.get('scraped_at', datetime.now(timezone.utc).isoformat()),
-                                'source': 'Yahoo News',
+                                'source': 'Bing News',
                                 'image_url': article.get('image_url', ''),
                                 'search_query': title,
                                 'status': 'success',
@@ -939,7 +677,7 @@ class ScrapingService:
                                 'video_links': video_links,  # This is now a string
                                 'backlinks': [],
                                 'scheduled_time': datetime.now(timezone.utc).isoformat(),
-                                'category_id': f"yahoo_{category}"
+                                'category_id': f"bing_{category}"
                             }
                             category_articles.append(article_data)
                         
@@ -949,15 +687,14 @@ class ScrapingService:
             return formatted_result
             
         except Exception as e:
-            logger.error(f"Error in Yahoo fetch: {str(e)}", exc_info=True)
+            logger.error(f"Error in Bing fetch: {str(e)}", exc_info=True)
             return {
                 'success': False,
                 'categories': {cat['name']: [] for cat in categories},
                 'total_articles': 0,
-                'vendor': 'yahoo',
+                'vendor': 'bing',
                 'error': str(e)
             }
-
 
     @retry(max_retries=2, initial_delay=1, max_delay=5, backoff_factor=1.5)
     def scrape_news(self, query, source='google', max_results=5, language='en', country='us'):
@@ -1004,7 +741,7 @@ class ScrapingService:
                 }
             
             # Filter out YouTube and duplicate URLs
-            unique_links, _ = self._get_unique_articles(search_results)
+            unique_links = self.scraper.get_unique_links(search_results, count=len(search_results))
             
             if not unique_links:
                 return {
@@ -1017,33 +754,28 @@ class ScrapingService:
             
             logger.info(f"Found {len(unique_links)} unique articles")
             
-            # Scrape up to max_results articles
-            articles = []
-            scraped_count = 0
+            # Scrape up to max_results articles using the base scraper's multiple URL method
+            target_urls = unique_links[:max_results]
+            scraped_results = self.scraper.scrape_multiple_urls(
+                urls=target_urls,
+                target_count=max_results,
+                delay=1,
+                min_length=100
+            )
             
-            for url in unique_links[:max_results]:
-                try:
-                    logger.info(f"Scraping article {scraped_count + 1}/{min(max_results, len(unique_links))}: {url}")
-                    
-                    # Scrape the article
-                    article_data = self.scrape_url(url=url)
-                    
-                    if article_data:
-                        # Add metadata
-                        article_data['source_url'] = url
-                        article_data['query'] = query
-                        article_data['language'] = language
-                        article_data['country'] = country
-                        
-                        articles.append(article_data)
-                        scraped_count += 1
-                        
-                        # Add a small delay between requests
-                        time.sleep(1)
-                        
-                except Exception as e:
-                    logger.warning(f"Error scraping article {url}: {str(e)}")
-                    continue
+            # Add metadata to each successful result
+            articles = []
+            for article_data in scraped_results:
+                if article_data:
+                    # Find the original URL for this article
+                    url = article_data.get('url')
+                    article_data['source_url'] = url
+                    article_data['query'] = query
+                    article_data['language'] = language
+                    article_data['country'] = country
+                    articles.append(article_data)
+            
+            scraped_count = len(articles)
             
             return {
                 'success': True,
@@ -1062,29 +794,18 @@ class ScrapingService:
                 'total_scraped': 0
             }
     
-    def _save_to_file(self, data, filename):
+    
+    def _save_to_json(self, data, filepath):
         """
-        Save scraped data to a JSON file.
+        Save data to a JSON file.
         
         Args:
             data: Data to save
-            filename: Output filename
+            filepath: Path to save the file
             
         Returns:
-            str: Path to the saved file, or None if failed
+            bool: True if successful, False otherwise
         """
-        try:
-            filepath = os.path.join(self.output_dir, filename)
-            # Commented out file writing as per request
-            # with open(filepath, 'w', encoding='utf-8') as f:
-            #     json.dump(data, f, ensure_ascii=False, indent=2)
-            return None  # Return None since we're not saving files anymore
-        except Exception as e:
-            logger.error(f"Error saving to file: {str(e)}")
-            return None
-    
-    def _save_to_json(self, data, filepath):
-        """Save data to a JSON file."""
         try:
             # Commented out file writing as per request
             # with open(filepath, 'w', encoding='utf-8') as f:
@@ -1138,10 +859,18 @@ class ScrapingService:
                         min_length=100
                     )
                 )
+            if asyncio.iscoroutinefunction(self.video_links):
+                video_link = await self.video_links(keyword)
+            else:
+                loop = asyncio.get_running_loop()
+                video_link = await loop.run_in_executor(
+                    None, self.video_links, keyword
+                )
 
             return {
                 'success': True,
-                'articles': scraped_data,
+                'results': scraped_data,
+                'video_link': video_link,
                 'total_found': len(search_results) if search_results else 0,
                 'total_scraped': len(scraped_data) if scraped_data else 0
             }

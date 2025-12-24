@@ -216,3 +216,8 @@ Interactive API documentation is also available at:
 ## License
 
 [crective]
+to dos
+i wanna make the save and process image th eonly image function with the ability to return the raw link and also the processed link 
+basically making a mode
+one mode will process the link other will not and just return the image 
+if the return link is set to 0 it will just return raw links but if the retrurn links are set to number it will return the processed links in that number, moreover if i give raw links it shoudl be able to save it and process it 

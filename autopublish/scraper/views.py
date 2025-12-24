@@ -139,7 +139,7 @@ class KeywordSearchView(BaseScraperView):
             if valid_urls:
                 # Try to get at least max_results * 1.5 or all valid URLs, whichever is smaller
                 target_urls = valid_urls[:min(len(valid_urls), int(max_results * 1.5))]
-                results = await self.service.scrape_urls_async(target_urls)
+                results = await sync_to_async(self.service.scraper.scrape_multiple_urls)(target_urls, target_count=max_results)
                 
                 # Filter out None results and take only max_results
                 scraped_results = []

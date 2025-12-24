@@ -15,7 +15,10 @@ HTML STRUCTURE REQUIREMENTS:
 5. Use descriptive and valid anchor text for links
 
 CONTENT REQUIREMENTS:
-1. Word Count: Minimum 3000 words
+1. Word Count: Minimum {section_chunks.get('target_word_count', 2000)} words
+    - The content should be detailed and comprehensive
+    - Ensure the word count is at least {section_chunks.get('target_word_count', 2000)} words
+    - If the content is too short, expand on the existing sections
 2. Structure:
    - Start with a compelling introduction (150-200 words)
    - Include at least 10 H2 sections
@@ -33,8 +36,7 @@ CONTENT REQUIREMENTS:
    - Include relevant internal and external links with proper HTML anchor tags
    - Ensure all links have descriptive anchor text (not just 'click here')
    - Add image placeholders with descriptive alt text
-
-
+   
 4. Formatting:
    - Use proper HTML5 semantic elements
    - Ensure responsive design (images and videos should have max-width:100%)

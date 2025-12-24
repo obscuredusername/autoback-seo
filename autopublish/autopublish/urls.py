@@ -20,8 +20,9 @@ from django.urls import path, include
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('user/', include('user.urls')),
-    path('keyword/', include('keyword_content.urls')),  # Updated from autopublish.keyword_content
+    # path('keyword/', include('keyword_content.urls')),  # Legacy: Replaced by content app
     path('scraper/', include('scraper.urls')),
-    path('news/', include('news_content.urls')),  
+    # path('news/', include('news_content.urls')),      # Legacy: Replaced by content app
     path('generator/', include('content_generator.urls')),
+    path('', include('content.urls')),  # New consolidated app handling /keyword/generate/ and /news/generate/
 ]

@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from openai import AsyncOpenAI
-from .base import ContentGenerator, ImageGenerator
+from .base import ContentGenerator
 
 # Ensure the data directory exists with sudo
 import subprocess
@@ -64,13 +64,9 @@ async def rephrase_news_content(request=None, **kwargs):
         # Call the content generator
         content_generator = ContentGenerator()
         rephrase_result = await content_generator.rephrase_content(
+            title=title,
             content=content,
-            target_word_count=target_word_count,
-            language=language,
-            original_title=title,
-            images=images,
-            backlinks=backlinks,
-            video_links=video_links
+            language=language
         )
         
         # Prepare the result
@@ -285,106 +281,4 @@ async def generate_blog_from_keyword(request):
         return JsonResponse(
             {"error": f"An error occurred: {str(e)}"}, 
             status=500
-        )
-@csrf_exempt
-@require_http_methods(["POST"])
-async def generate_image(request):
-    """
-    Generate images from an array of prompts.
-    
-    Expected POST data:
-    {
-        "prompts": ["prompt 1", "prompt 2", ...],  # Array of image generation prompts
-        "size": "1024x1024"  # Optional, default is 1024x1024
-    }
-    
-    Returns:
-        JSON response with array of image URLs or error message
-    """
-    try:
-        data = json.loads(request.body)
-        prompts = data.get('prompts', [])
-        size = data.get('size', '1024x1024')
-        
-        if not prompts:
-            return JsonResponse(
-                {'error': 'No prompts provided'}, 
-                status=400
-            )
-            
-        # Generate images (this function will be implemented in base.py)
-        image_generator = ImageGenerator()
-        image_urls = []
-        
-        for prompt in prompts:
-            try:
-                keyword = prompt.split(".")[0]
-                result = await image_generator.image_generation_process(prompt, keyword=keyword, size=size)
-                if result.get('url'):
-                    image_urls.append(result['url'])
-            except Exception as e:
-                print(f"Error generating image for prompt '{prompt}': {str(e)}")
-                image_urls.append(None)  # Keep the array length consistent
-        
-        return JsonResponse({
-            'status': 'success',
-            'image_urls': image_urls,
-            'prompts': prompts
-        })
-        
-    except json.JSONDecodeError:
-        return JsonResponse(
-            {'error': 'Invalid JSON data'}, 
-            status=400
-        )
-    except Exception as e:
-        return JsonResponse(
-            {'error': f'An error occurred: {str(e)}'}, 
-            status=500
-        )
-async def download_image(request):
-    try:
-        data = json.loads(request.body)
-        image_links = data.get('image_links')
-        if not image_links:
-            return JsonResponse(
-                {'error': 'No image links provided'}, 
-                status=400
-            )
-        
-        results = []
-        image_generator = ImageGenerator()
-        
-        for image_link in image_links:
-            try:
-                # Use the last part of the URL as the keyword
-                keyword = image_link.split('/')[-1].split('.')[0]  # Remove file extension
-                result = await image_generator.save_and_process_image(image_link, keyword)
-                results.append({
-                    'original_url': image_link,
-                    'processed_url': result,
-                    'status': 'success'
-                })
-            except Exception as e:
-                results.append({
-                    'original_url': image_link,
-                    'error': str(e),
-                    'status': 'error'
-                })
-        
-        return JsonResponse({
-            'status': 'completed',
-            'results': results
-        })
-        
-    except json.JSONDecodeError:
-        return JsonResponse(
-            {'error': 'Invalid JSON data'}, 
-            status=400
-        )
-    except Exception as e:
-        return JsonResponse(
-            {'error': f'An error occurred: {str(e)}'}, 
-            status=500,
-            safe=False
         )

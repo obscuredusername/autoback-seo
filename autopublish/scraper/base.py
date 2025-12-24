@@ -8,7 +8,7 @@ import threading
 import time
 import traceback
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 from .utils import retry
 
 class WebContentScraper:
@@ -97,7 +97,7 @@ class WebContentScraper:
     @retry(max_retries=2, initial_delay=1, max_delay=5, backoff_factor=1.5)
     def search_with_fallback(self, keyword, country_code='us', language='en', max_results=25, attempt=1, max_attempts=2, retry_delay=10):
         """
-        Search with fallback providers and retry logic when all providers fail
+        Search using DuckDuckGo with retry logic.
         
         Args:
             keyword: Search term
@@ -105,38 +105,23 @@ class WebContentScraper:
             language: Language code for results
             max_results: Maximum number of results to return
             attempt: Current attempt number (internal use)
-            max_attempts: Maximum number of attempts to try all providers
+            max_attempts: Maximum number of attempts
             retry_delay: Delay in seconds between retry attempts (default: 10)
             
         Returns:
             List of search results or empty list if all attempts fail
         """
-        print(f"🔍 Attempt {attempt}/{max_attempts}: Searching for '{keyword}' with fallback providers...")
+        print(f"🔍 Attempt {attempt}/{max_attempts}: Searching for '{keyword}' with DuckDuckGo...")
         
-        # Try DuckDuckGo first
         results = self.search_duckduckgo(keyword, country_code, language, max_results)
         if results:
             print(f"✅ DuckDuckGo search successful: {len(results)} results")
             return results
         
-        print("⚠️ DuckDuckGo failed, trying alternative search...")
-        
-        # Fallback 1: Try Bing search
-        results = self.search_bing(keyword, max_results)
-        if results:
-            print(f"✅ Bing search successful: {len(results)} results")
-            return results
-        
-        # Fallback 2: Try direct Google search (simple)
-        results = self.search_google_simple(keyword, max_results)
-        if results:
-            print(f"✅ Google search successful: {len(results)} results")
-            return results
-        
-        # If we have more attempts left, retry the entire process
+        # If we have more attempts left, retry
         if attempt < max_attempts:
-            print(f"⚠️ All search providers failed, waiting {retry_delay} seconds before retry ({attempt + 1}/{max_attempts})...")
-            time.sleep(retry_delay)  # Wait for the specified delay before retrying
+            print(f"⚠️ DuckDuckGo failed, waiting {retry_delay} seconds before retry ({attempt + 1}/{max_attempts})...")
+            time.sleep(retry_delay)
             
             # Rotate user agent before retry
             self.session.headers.update({'User-Agent': random.choice(self.user_agents)})
@@ -151,7 +136,7 @@ class WebContentScraper:
                 retry_delay=retry_delay
             )
         
-        print("❌ All search providers failed after all attempts")
+        print("❌ DuckDuckGo search failed after all attempts")
         return []
 
     @retry(max_retries=3, initial_delay=1, max_delay=10, backoff_factor=2)
@@ -261,98 +246,7 @@ class WebContentScraper:
             
         return []
     
-    def search_bing(self, keyword, max_results=25):
-        """
-        Search using Bing (no API key required)
-        """
-        try:
-            search_url = "https://www.bing.com/search"
-            params = {'q': keyword, 'count': min(max_results, 50)}
-            
-            headers = {
-                'User-Agent': random.choice(self.user_agents),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1'
-            }
-            
-            response = self.session.get(search_url, params=params, headers=headers, timeout=self.default_timeout)
-            
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.content, 'html.parser')
-                links = []
-                
-                # Bing search results are in different selectors
-                results = soup.find_all('li', class_='b_algo') or soup.find_all('div', class_='b_algo')
-                
-                for result in results:
-                    link_elem = result.find('a')
-                    if link_elem:
-                        href = link_elem.get('href', '')
-                        if href and href.startswith('http') and 'bing.com' not in href:
-                            if href not in links:
-                                links.append(href)
-                                if len(links) >= max_results:
-                                    break
-                
-                return links
-            
-            return []
-            
-        except Exception as e:
-            print(f"Error searching Bing: {str(e)}")
-            return []
 
-    def search_google_simple(self, keyword, max_results=25):
-        """
-        Simple Google search (may be rate limited)
-        """
-        try:
-            search_url = "https://www.google.com/search"
-            params = {'q': keyword, 'num': min(max_results, 50)}
-            
-            headers = {
-                'User-Agent': random.choice(self.user_agents),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1'
-            }
-            
-            # Add delay to avoid rate limiting
-            time.sleep(2)
-            
-            response = self.session.get(search_url, params=params, headers=headers, timeout=self.default_timeout)
-            
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.content, 'html.parser')
-                links = []
-                
-                # Google search results
-                results = soup.find_all('div', class_='g') or soup.find_all('div', {'data-ved': True})
-                
-                for result in results:
-                    link_elem = result.find('a')
-                    if link_elem:
-                        href = link_elem.get('href', '')
-                        if href and href.startswith('http') and 'google.com' not in href:
-                            if href not in links:
-                                links.append(href)
-                                if len(links) >= max_results:
-                                    break
-                
-                return links
-            
-            return []
-            
-        except Exception as e:
-            print(f"Error searching Google: {str(e)}")
-            return []
 
     def get_unique_links(self, links, count=15):
         unique_links = []
@@ -405,7 +299,7 @@ class WebContentScraper:
                 return None
             # Dummy main content extraction (replace with real logic if needed)
             soup = BeautifulSoup(response.content, 'html.parser')
-            title = soup.title.string if soup.title else url
+            title = str(soup.title.string) if soup.title and soup.title.string else url
             content = soup.get_text(separator=' ', strip=True)
             content = re.sub(r'\s+', ' ', content).strip()
             if len(content) < min_length:
@@ -527,46 +421,70 @@ class WebContentScraper:
 
         # User agents for request headers
         user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/91.0.864.59',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0 Safari/537.36'
         ]
         
         # Create a new session
         session = requests.Session()
-        session.headers.update({
-            'User-Agent': random.choice(user_agents),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
-        })
         
         search_keyword = f"{keyword} site:youtube.com"
-        print(f"🔍 Searching for: {search_keyword}")
+        print(f"🔍 Searching for: {keyword}")
         
-        # Try DuckDuckGo first, then Google as fallback
+        # Try direct YouTube search first (often more reliable)
+        try:
+            yt_search_url = f"https://www.youtube.com/results?search_query={keyword.replace(' ', '+')}"
+            print(f"Trying direct YouTube search: {yt_search_url}")
+            yt_headers = {
+                'User-Agent': random.choice(user_agents),
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
+            yt_response = session.get(yt_search_url, headers=yt_headers, timeout=15)
+            if yt_response.status_code == 200:
+                # Extract video IDs using regex
+                video_ids = re.findall(r'/watch\?v=([a-zA-Z0-9_-]{11})', yt_response.text)
+                if video_ids:
+                    # Get the first unique video ID
+                    video_id = video_ids[0]
+                    video_url = f"https://www.youtube.com/watch?v={video_id}"
+                    
+                    # Get title via oembed
+                    title = f"Video about {keyword}"
+                    try:
+                        oembed_url = f"https://www.youtube.com/oembed?url={video_url}&format=json"
+                        oe_res = session.get(oembed_url, timeout=5)
+                        if oe_res.status_code == 200:
+                            title = oe_res.json().get('title', title)
+                    except:
+                        pass
+                        
+                    print(f"✅ Found YouTube video (direct): {title}")
+                    return video_url
+        except Exception as e:
+            print(f"Direct YouTube search failed: {str(e)}")
+
+        # Fallback to DuckDuckGo
         urls = [
-            f"https://duckduckgo.com/?q={search_keyword}&t=h_&iax=videos&ia=videos",
-            f"https://www.google.com/search?q={search_keyword}&tbm=vid"
+            f"https://duckduckgo.com/html/?q={search_keyword}"
         ]
         
         for url in urls:
             try:
-                print(f"Trying search: {url}")
+                print(f"Trying fallback search: {url}")
                 headers = {
                     'User-Agent': random.choice(user_agents),
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'DNT': '1',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1'
                 }
                 
                 response = session.get(url, headers=headers, timeout=15)
                 
+                # If we get 202, it might be a "processing" page, wait a bit and retry once
+                if response.status_code == 202:
+                    print("⚠️ Received 202 Accepted, waiting 2 seconds...")
+                    time.sleep(2)
+                    response = session.get(url, headers=headers, timeout=15)
+
                 if response.status_code == 200:
                     soup = BeautifulSoup(response.text, 'html.parser')
                     
@@ -574,6 +492,13 @@ class WebContentScraper:
                     for a in soup.find_all('a', href=True):
                         href = a['href']
                         
+                        # Handle DuckDuckGo redirect links
+                        if 'duckduckgo.com/l/?uddg=' in href:
+                            try:
+                                href = unquote(href.split('uddg=')[-1].split('&')[0])
+                            except:
+                                pass
+
                         # Skip if not a YouTube URL
                         if 'youtube.com/watch' not in href and 'youtu.be/' not in href:
                             continue
@@ -582,7 +507,7 @@ class WebContentScraper:
                         if 'google.com/url?' in href:
                             try:
                                 parsed = urlparse(href)
-                                href = parse_qs(parsed.query)['q'][0]
+                                href = parse_qs(parsed.query).get('q', [None])[0]
                             except:
                                 continue
                         
@@ -606,8 +531,15 @@ class WebContentScraper:
                         except:
                             pass
                             
-                        print(f"✅ Found YouTube video: {title}")
+                        print(f"✅ Found YouTube video (fallback): {title}")
                         return video_url  # Return just the URL string
+                    
+                    if not any('youtube.com' in a.get('href', '') or 'youtu.be' in a.get('href', '') for a in soup.find_all('a', href=True)):
+                        print(f"⚠️ No YouTube links found in response from {url}")
+                        if "captcha" in response.text.lower() or "robot" in response.text.lower():
+                            print("❌ DuckDuckGo might be blocking with a captcha")
+                else:
+                    print(f"❌ Search failed with status code: {response.status_code}")
                         
             except Exception as e:
                 print(f"Error with {url}: {str(e)}")

@@ -49,10 +49,10 @@ INSTALLED_APPS = [
     'corsheaders',
     'user',  # Custom user app must be before other custom apps
     'content',  # Content app for core content management
-    'keyword_content',
+    # 'keyword_content',  # Legacy: Removed
     'content_generator',  # Content generation functionality
     'scraper',  # Web scraping functionality
-    'news_content',
+    # 'news_content',  # Legacy: Removed
 ]
 
 
